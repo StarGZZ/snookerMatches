@@ -1,0 +1,58 @@
+# 依赖目录
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 编译输出
+dist/
+miniprogram_npm/
+
+# 云函数依赖
+cloudfunctions/*/node_modules/
+
+# 运行时数据
+*.log
+logs/
+
+# 操作系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 微信开发者工具生成的文件
+.project
+*.wxss.map
+*.wxml.map
+*.js.map
+
+# 环境变量文件
+.env
+.env.local
+.env.*.local
+
+# 测试覆盖率
+coverage/
+.nyc_output
+
+# 临时文件
+tmp/
+temp/
+
+# 云函数本地调试文件
+cloudfunctions/*/package-lock.json
+cloudfunctions/*/yarn.lock
+
+# 本地配置文件（根据情况决定是否忽略）
+# project.private.config.json  # 通常包含项目设置，但可能包含敏感信息，建议忽略
+# 注意：project.config.json 通常需要保留，它包含项目配置但不含敏感信息

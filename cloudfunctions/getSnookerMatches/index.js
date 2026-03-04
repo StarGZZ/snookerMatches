@@ -20,9 +20,9 @@ const API_CONFIG = {
   SNOOKER_ORG: 'https://api.snooker.org'
 }
 
-// snooker.org 授权请求头（来自 snooker.org 提供的 header value）
-// 请将 'StarWeChat261' 替换为你从 snooker.org 获取的实际 API key
-const SNOOKER_REQUESTED_BY = 'StarWeChat261'
+// snooker.org 授权请求头（标识你的应用，可以是任何字符串）
+// 参考: https://api.snooker.org/ - "Set the X-Requested-By header to something (anything)"
+const SNOOKER_REQUESTED_BY = 'SnookerScheduleMiniProgram'
 
 // 内存缓存：减少外部请求次数（snooker.org 限流 10 次/分钟）
 const _cache = {
@@ -76,7 +76,7 @@ async function fetchData(url, options = {}) {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
-      timeout: 3000,
+      timeout: 5000,
       ...options
     }
     
@@ -112,34 +112,40 @@ async function getMatchList() {
       try {
         const now = new Date()
         const defaultSeason = now.getMonth() < 5 ? now.getFullYear() - 1 : now.getFullYear()
+        console.log('尝试从 snooker.org 获取赛事数据，赛季:', defaultSeason)
         const events = await withTimeout(
           getSnookerEvents(defaultSeason, 'main'),
-          2000,
+          5000,
           'snooker.org 请求超时'
         )
         if (events && events.length > 0) {
           console.log('snooker.org 获取到赛事数据，数量:', events.length)
           return formatMatchList(events)
+        } else {
+          console.log('snooker.org 返回空数据或数据为空')
         }
       } catch (err) {
-        console.log('snooker.org 获取赛事列表失败:', err.message)
+        console.log('snooker.org 获取赛事列表失败:', err.message, err.stack)
       }
       return null
     })()
 
     const cuetrackerPromise = (async () => {
       try {
+        console.log('尝试从 Cuetracker 获取赛事数据')
         const data = await withTimeout(
           fetchFromCuetracker('tournaments'),
-          2000,
+          5000,
           'Cuetracker 请求超时'
         )
         if (data && data.length > 0) {
           console.log('Cuetracker 获取到赛事数据，数量:', data.length)
           return formatMatchList(data)
+        } else {
+          console.log('Cuetracker 返回空数据或数据为空')
         }
       } catch (err) {
-        console.log('Cuetracker 获取赛事列表失败:', err.message)
+        console.log('Cuetracker 获取赛事列表失败:', err.message, err.stack)
       }
       return null
     })()
@@ -162,13 +168,32 @@ async function getMatchList() {
       return cuetrackerResult.value
     }
 
-    // 5. 都失败，快速返回本地数据（确保不超时）
-    console.log('所有外部数据源失败，返回本地实时数据')
-    return getRealtimeMatchList()
+    // 5. 都失败，抛出错误（用户要求真实数据，获取失败需提示）
+    console.error('所有外部数据源失败，无法获取真实数据')
+    console.error('snooker.org 结果:', snookerResult)
+    console.error('Cuetracker 结果:', cuetrackerResult)
+    
+    // 构建详细的错误信息
+    let errorDetail = '获取真实比赛数据失败，请检查网络连接或API配置。'
+    if (snookerResult.status === 'rejected') {
+      errorDetail += ` snooker.org: ${snookerResult.reason?.message || '请求失败'};`
+    } else if (!snookerResult.value) {
+      errorDetail += ` snooker.org: 返回空数据;`
+    }
+    if (cuetrackerResult.status === 'rejected') {
+      errorDetail += ` Cuetracker: ${cuetrackerResult.reason?.message || '请求失败'};`
+    } else if (!cuetrackerResult.value) {
+      errorDetail += ` Cuetracker: 返回空数据;`
+    }
+    
+    throw new Error(errorDetail)
   } catch (error) {
     console.error('获取比赛列表失败:', error)
-    // 兜底：确保总是有数据返回
-    return getRealtimeMatchList()
+    // 用户要求真实数据，获取失败时抛出错误
+    if (error.message.includes('获取真实比赛数据失败')) {
+      throw error
+    }
+    throw new Error('获取比赛列表失败: ' + error.message)
   }
 }
 
@@ -366,96 +391,13 @@ async function getMatchDetail(id) {
         }
       }
     } catch (err) {
-      console.log('snooker.org 获取详情失败，继续兜底', err.message, err.stack)
+      console.error('snooker.org 获取详情失败:', err.message, err.stack)
+      throw new Error('无法从官方数据源获取比赛详情，请检查网络连接或API配置')
     }
 
-    // 尝试从本地实时数据中查找
-    console.log('尝试从本地实时数据中查找ID:', id)
-    const localTournaments = [
-      {
-        id: 'wst-world-championship-2026',
-        name: '2026 Cazoo World Snooker Championship',
-        start_date: '2026-04-19',
-        end_date: '2026-05-05',
-        venue: 'Crucible Theatre, Sheffield, UK',
-        prize_fund: '£2,395,000'
-      },
-      {
-        id: 'wst-welsh-open-2026',
-        name: '2026 BetVictor Welsh Open',
-        start_date: '2026-02-23',
-        end_date: '2026-03-01',
-        venue: 'Venue Cymru, Llandudno, Wales',
-        prize_fund: '£80,000'
-      },
-      {
-        id: 'wst-players-championship-2026',
-        name: '2026 Players Championship',
-        start_date: '2026-03-17',
-        end_date: '2026-03-23',
-        venue: 'Telford International Centre, UK',
-        prize_fund: '£385,000'
-      },
-      {
-        id: 'wst-china-open-2026',
-        name: '2026 China Open',
-        start_date: '2026-03-24',
-        end_date: '2026-03-30',
-        venue: 'Beijing, China',
-        prize_fund: '£225,000'
-      },
-      {
-        id: 'wst-german-masters-2026',
-        name: '2026 BetVictor German Masters',
-        start_date: '2026-02-02',
-        end_date: '2026-02-08',
-        venue: 'Tempodrom, Berlin, Germany',
-        prize_fund: '£80,000'
-      },
-      {
-        id: 'wst-uk-championship-2025',
-        name: '2025 Cazoo UK Championship',
-        start_date: '2025-11-25',
-        end_date: '2025-12-08',
-        venue: 'York Barbican, York, UK',
-        prize_fund: '£1,205,000'
-      },
-      {
-        id: 'wst-british-open-2026',
-        name: '2026 British Open',
-        start_date: '2026-09-22',
-        end_date: '2026-09-28',
-        venue: 'The Centaur, Cheltenham, UK',
-        prize_fund: '£101,000'
-      },
-      {
-        id: 'wst-shanghai-masters-2025',
-        name: '2025 Shanghai Masters',
-        start_date: '2025-09-15',
-        end_date: '2025-09-21',
-        venue: 'Shanghai, China',
-        prize_fund: '£825,000'
-      }
-    ]
-    
-    const localMatch = localTournaments.find(t => t.id === id || String(t.id) === String(id))
-    if (localMatch) {
-      console.log('在本地数据中找到匹配的赛事:', localMatch.name)
-      const status = determineMatchStatus(localMatch.start_date, localMatch.end_date)
-      return Object.assign({}, localMatch, { status })
-    }
-    
-    // 如果找不到对应的比赛，返回默认数据
-    console.warn('未找到比赛ID:', id, '返回默认数据')
-    return {
-      id: id,
-      name: 'Unknown Tournament',
-      start_date: '2026-01-01',
-      end_date: '2026-01-07',
-      venue: 'TBA',
-      prize_fund: '£0',
-      status: 'upcoming'
-    }
+    // 如果snooker.org连接成功但没有找到匹配的赛事
+    console.error('未找到匹配的比赛ID:', id)
+    throw new Error('未找到该比赛的详细信息，可能比赛已结束或数据暂未更新')
   } catch (error) {
     console.error('获取比赛详情失败:', error)
     throw error
@@ -510,11 +452,13 @@ async function getMatchSchedule(matchId, date) {
         return formatted
       }
     } catch (err) {
-      console.log('snooker.org 赛程获取失败，使用兜底数据', err.message)
+      console.error('snooker.org 赛程获取失败:', err.message)
+      throw new Error('无法从官方数据源获取比赛赛程，请检查网络连接或API配置')
     }
 
-    // 兜底：避免页面空白
-    return generateRealtimeSchedule(matchId, date)
+    // 如果snooker.org连接成功但没有该日期的比赛，返回空数组
+    console.log('snooker.org 返回数据，但没有该日期的比赛')
+    return []
   } catch (error) {
     console.error('获取比赛日程失败:', error)
     throw error
@@ -716,48 +660,85 @@ function generateRealtimeSchedule(matchId, date) {
     return []
   }
 
-  // 根据日期生成比赛（固定种子以保持一致性）
-  const seed = parseInt(date.replace(/-/g, ''))
-  const numMatches = 3 + (seed % 3)
+  // 根据比赛ID和日期生成确定性种子
+  const hashSeed = (str) => {
+    let hash = 0
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i)
+      hash |= 0 // 转换为32位整数
+    }
+    return Math.abs(hash)
+  }
+  
+  const seed = hashSeed(matchId + date)
+  const numMatches = 4 // 固定每天4场比赛，保持一致性
+  
+  // 为不同比赛阶段定义合理的比分范围
+  const getReasonableScore = (roundIndex, isFinished, seedOffset) => {
+    // 斯诺克比赛通常是几局几胜制
+    const maxFrames = [5, 6, 7, 9, 11, 19] // 不同轮次的最大帧数
+    const maxFrame = maxFrames[Math.min(roundIndex, maxFrames.length - 1)] || 9
+    
+    if (isFinished) {
+      // 已结束的比赛：生成合理的比分（如4-3, 5-2等）
+      const winningFrames = Math.floor((seedOffset % (maxFrame - 1)) + Math.ceil(maxFrame / 2))
+      const score1 = winningFrames
+      const score2 = maxFrame - winningFrames
+      return { score1, score2 }
+    } else if (status === 'ongoing') {
+      // 进行中的比赛：比分应该小于最大帧数
+      const currentFrame = Math.floor((seedOffset % maxFrame) + 1)
+      const score1 = Math.floor(currentFrame / 2) + 1
+      const score2 = Math.floor((currentFrame - 1) / 2)
+      return { score1, score2 }
+    } else {
+      // 未开始的比赛
+      return { score1: 0, score2: 0 }
+    }
+  }
 
   const schedule = []
   for (let i = 0; i < numMatches; i++) {
-    const player1Idx = (seed + i * 7) % players.length
-    const player2Idx = (seed + i * 7 + 3) % players.length
+    // 使用确定性算法选择选手（确保同一天同一比赛的选手相同）
+    const playerOffset = (seed + i * 13) % (players.length - 1)
+    const player1Idx = (playerOffset) % players.length
+    const player2Idx = (playerOffset + 5 + i) % players.length
+    
+    // 确保选手不相同
+    const actualPlayer2Idx = player1Idx === player2Idx ? (player2Idx + 1) % players.length : player2Idx
 
     // 根据当前日期判断比赛状态
     const now = new Date()
-    const matchTime = new Date(`${date} ${String(9 + i * 4).padStart(2, '0')}:00`)
-
-    let status, score1, score2
+    const matchTime = new Date(`${date} ${String(10 + i * 3).padStart(2, '0')}:00`)
+    
+    let status
     if (now > matchTime) {
       status = 'finished'
-      // 已结束的比赛有比分
-      score1 = Math.floor((seed + i * 2) % 7) + 1
-      score2 = Math.floor((seed + i * 3) % 7)
     } else if (now >= new Date(`${date} 09:00`)) {
       status = 'ongoing'
-      score1 = Math.floor((seed + i * 2) % 5) + 2
-      score2 = Math.floor((seed + i * 3) % 5) + 1
     } else {
       status = 'upcoming'
-      score1 = 0
-      score2 = 0
     }
+    
+    // 获取合理比分
+    const roundIndex = Math.min(i, rounds.length - 1)
+    const { score1, score2 } = getReasonableScore(roundIndex, status === 'finished', seed + i * 17)
 
     schedule.push({
       id: `match-${matchId}-${date}-${i}`,
       match_id: `${matchId}-${date}-${i}`,
-      start_time: `${String(9 + i * 4).padStart(2, '0')}:00`,
+      start_time: `${String(10 + i * 3).padStart(2, '0')}:00`, // 10:00, 13:00, 16:00, 19:00
       player_1: players[player1Idx],
-      player_2: players[player2Idx],
+      player_2: players[actualPlayer2Idx],
       score_1: score1,
       score_2: score2,
-      round: rounds[Math.min(i, 5)],
-      status: status
+      round: rounds[roundIndex],
+      status: status,
+      isSimulated: true // 标记这是模拟数据
     })
   }
 
+  console.log(`生成模拟赛程数据，比赛ID: ${matchId}, 日期: ${date}, 场次: ${schedule.length}`)
   return schedule
 }
 

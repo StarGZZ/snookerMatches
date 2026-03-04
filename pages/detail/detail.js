@@ -52,6 +52,10 @@ Page({
           activeDate: dateTabs[0].date
         })
 
+        // 缓存比赛详情数据
+        wx.setStorageSync(`matchDetail-${id}`, match)
+        console.log('比赛详情已缓存')
+
         this.loadScheduleByDate(dateTabs[0].date)
         wx.setNavigationBarTitle({ title: match.name || '比赛详情' })
         wx.hideLoading()
@@ -59,12 +63,38 @@ Page({
       .catch(err => {
         console.error('加载比赛详情失败:', err)
         wx.hideLoading()
-        wx.showToast({
-          title: '加载失败，使用本地数据',
-          icon: 'none'
-        })
-        // 失败时使用模拟数据
-        this.loadMockMatchDetail(id)
+        
+        // 尝试从缓存中加载比赛详情
+        const cachedMatch = wx.getStorageSync(`matchDetail-${id}`)
+        if (cachedMatch) {
+          console.log('使用缓存的比赛详情数据')
+          const dateTabs = this.generateDateTabs(cachedMatch.startDate, cachedMatch.endDate)
+          this.setData({
+            match: cachedMatch,
+            dateTabs: dateTabs,
+            activeDate: dateTabs[0]?.date || ''
+          })
+          wx.showToast({
+            title: '使用缓存数据，可能不是最新',
+            icon: 'none',
+            duration: 3000
+          })
+          if (dateTabs[0]?.date) {
+            this.loadScheduleByDate(dateTabs[0].date)
+          }
+        } else {
+          wx.showToast({
+            title: '获取真实数据失败: ' + (err.message || '请检查网络连接'),
+            icon: 'none',
+            duration: 3000
+          })
+          // 不再使用模拟数据，保持页面空白或显示错误状态
+          this.setData({
+            match: { name: '数据加载失败' },
+            dateTabs: [],
+            currentSchedule: []
+          })
+        }
       })
   },
 
@@ -136,23 +166,26 @@ Page({
 
     // 确保日期字符串格式正确
     const parseDate = (dateStr) => {
-      if (!dateStr) return new Date()
+      if (!dateStr) {
+        console.warn('日期字符串为空，使用当前日期')
+        return new Date()
+      }
       
       // 如果是ISO格式（包含T），直接解析
       if (typeof dateStr === 'string' && dateStr.includes('T')) {
-        return new Date(dateStr)
+        const date = new Date(dateStr)
+        if (!isNaN(date.getTime())) return date
       }
       
       // 如果是YYYY-MM-DD格式
       if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        return new Date(dateStr + 'T00:00:00')
+        const date = new Date(dateStr + 'T00:00:00')
+        if (!isNaN(date.getTime())) return date
       }
       
       // 尝试直接解析
       const date = new Date(dateStr)
-      if (!isNaN(date.getTime())) {
-        return date
-      }
+      if (!isNaN(date.getTime())) return date
       
       console.warn('无法解析日期:', dateStr, '使用当前日期')
       return new Date()
@@ -161,23 +194,74 @@ Page({
     const start = parseDate(startDate)
     const end = endDate ? parseDate(endDate) : new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000) // 默认7天
 
+    // 验证日期有效性
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      console.error('开始或结束日期无效，使用默认日期范围')
+      const now = new Date()
+      const defaultStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const defaultEnd = new Date(defaultStart.getTime() + 6 * 24 * 60 * 60 * 1000)
+      return this.generateDefaultDateTabs(defaultStart, defaultEnd, weekDays)
+    }
+
+    // 确保结束日期不早于开始日期
+    const effectiveEnd = end >= start ? end : new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000)
+
     // 防止异常日期导致无限增长，最多生成 40 天
     const dayMs = 24 * 60 * 60 * 1000
     const maxDays = 40
-    const totalDays = Math.min(maxDays, Math.max(1, Math.round((end - start) / dayMs) + 1))
+    const totalDays = Math.min(maxDays, Math.max(1, Math.round((effectiveEnd - start) / dayMs) + 1))
 
-    console.log('生成日期范围:', totalDays, '天，从', start.toISOString(), '到', end.toISOString())
+    console.log('生成日期范围:', totalDays, '天，从', start.toISOString(), '到', effectiveEnd.toISOString())
 
     for (let i = 0; i < totalDays; i++) {
       const date = new Date(start.getTime() + i * dayMs)
+      
+      // 确保日期有效
+      if (isNaN(date.getTime())) {
+        console.error('生成无效日期，跳过')
+        continue
+      }
 
+      const formattedDate = this.formatDate(date)
+      if (!formattedDate) {
+        console.error('格式化日期失败，跳过')
+        continue
+      }
+
+      tabs.push({
+        date: formattedDate,
+        day: weekDays[date.getDay()]
+      })
+    }
+
+    // 如果没有任何选项卡，生成默认的
+    if (tabs.length === 0) {
+      console.log('没有生成任何选项卡，使用默认值')
+      const now = new Date()
+      const defaultStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const defaultEnd = new Date(defaultStart.getTime() + 6 * 24 * 60 * 60 * 1000)
+      return this.generateDefaultDateTabs(defaultStart, defaultEnd, weekDays)
+    }
+
+    console.log('生成的日期选项卡:', tabs)
+    return tabs
+  },
+
+  // 生成默认日期选项卡（当数据无效时使用）
+  generateDefaultDateTabs(start, end, weekDays) {
+    const tabs = []
+    const dayMs = 24 * 60 * 60 * 1000
+    const totalDays = Math.max(1, Math.round((end - start) / dayMs) + 1)
+    
+    for (let i = 0; i < Math.min(totalDays, 7); i++) {
+      const date = new Date(start.getTime() + i * dayMs)
       tabs.push({
         date: this.formatDate(date),
         day: weekDays[date.getDay()]
       })
     }
-
-    console.log('生成的日期选项卡:', tabs)
+    
+    console.log('生成的默认日期选项卡:', tabs)
     return tabs
   },
 
@@ -213,13 +297,46 @@ Page({
           currentSchedule: schedule,
           lastUpdateTime: this.formatTime(new Date())
         })
+        // 缓存赛程数据
+        if (this.data.match.id) {
+          wx.setStorageSync(`schedule-${this.data.match.id}-${date}`, schedule)
+          console.log('赛程数据已缓存')
+        }
         wx.hideLoading()
       })
       .catch(err => {
         console.error('加载日程失败:', err)
         wx.hideLoading()
-        // 失败时使用模拟数据
-        this.loadMockSchedule(date)
+        
+        // 尝试从缓存中加载赛程数据
+        if (this.data.match.id) {
+          const cachedSchedule = wx.getStorageSync(`schedule-${this.data.match.id}-${date}`)
+          if (cachedSchedule && cachedSchedule.length > 0) {
+            console.log('使用缓存的赛程数据')
+            this.setData({
+              currentSchedule: cachedSchedule,
+              lastUpdateTime: this.formatTime(new Date())
+            })
+            wx.showToast({
+              title: '使用缓存赛程数据',
+              icon: 'none',
+              duration: 3000
+            })
+            return
+          }
+        }
+        
+        // 没有缓存数据，显示错误
+        wx.showToast({
+          title: '获取赛程失败: ' + (err.message || '请检查网络连接'),
+          icon: 'none',
+          duration: 3000
+        })
+        // 不再使用模拟数据，显示空赛程
+        this.setData({
+          currentSchedule: [],
+          lastUpdateTime: this.formatTime(new Date())
+        })
       })
   },
 

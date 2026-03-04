@@ -76,21 +76,35 @@ Page({
       })
       .catch(err => {
         console.error('加载真实数据失败:', err)
-        wx.showToast({
-          title: '加载失败，使用本地数据',
-          icon: 'none'
-        })
-        // 失败时使用缓存数据
+        // 检查本地是否有缓存数据
         const cachedList = wx.getStorageSync('matchList')
+        const cachedTime = wx.getStorageSync('lastUpdateTime')
+        
         if (cachedList && cachedList.length > 0) {
-          console.log('使用缓存数据:', cachedList)
+          // 使用缓存数据，但提示用户数据可能不是最新的
           this.setData({
             matchList: cachedList,
-            loading: false
+            loading: false,
+            lastUpdateTime: cachedTime || new Date().toISOString()
           })
+          wx.showToast({
+            title: '使用缓存数据，可能不是最新',
+            icon: 'none',
+            duration: 3000
+          })
+          console.log('使用缓存数据，数量:', cachedList.length)
         } else {
-          console.log('没有缓存数据，使用模拟数据')
-          this.loadMockMatchList()
+          // 没有缓存数据，显示错误并清空列表
+          wx.showToast({
+            title: '获取真实数据失败: ' + (err.message || '请检查网络连接'),
+            icon: 'none',
+            duration: 3000
+          })
+          this.setData({
+            matchList: [],
+            loading: false,
+            lastUpdateTime: new Date().toISOString()
+          })
         }
       })
   },
