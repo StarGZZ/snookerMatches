@@ -88,8 +88,8 @@
   overflow-x: auto;
   overflow-y: visible;
   -webkit-overflow-scrolling: touch;
-  min-height: 80rpx;
-  /* height: auto; */
+  min-height: 100rpx;
+  height: auto;
 }
 
 .date-tab {
@@ -103,8 +103,8 @@
   border: 2rpx solid blue !important;
   background: #f5f5f5;
   min-width: 120rpx;
-  min-height: 80rpx;
-  /* height: auto; */
+  /* min-height: 80rpx; */
+  height: auto;
   flex-shrink: 0;
   overflow: hidden;
 
