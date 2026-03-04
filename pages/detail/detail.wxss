@@ -1,0 +1,277 @@
+.container {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding-bottom: 40rpx;
+}
+
+.match-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 40rpx 30rpx;
+  position: relative;
+}
+
+.match-title {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #ffffff;
+  margin-bottom: 16rpx;
+}
+
+.match-badge {
+  display: inline-block;
+  padding: 8rpx 24rpx;
+  border-radius: 30rpx;
+  font-size: 24rpx;
+  font-weight: bold;
+}
+
+.status-ongoing {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+
+.status-upcoming {
+  background: rgba(82, 196, 26, 0.9);
+  color: #ffffff;
+}
+
+.status-finished {
+  background: rgba(140, 140, 140, 0.8);
+  color: #ffffff;
+}
+
+.info-section {
+  background: #ffffff;
+  margin: 20rpx;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.08);
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.info-row:last-child {
+  border-bottom: none;
+}
+
+.info-label {
+  font-size: 28rpx;
+  color: #666;
+}
+
+.info-value {
+  font-size: 28rpx;
+  color: #333;
+  font-weight: 500;
+}
+
+.source {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: #999;
+  text-align: right;
+}
+
+.date-tabs {
+  display: flex;
+  background: #ffffff;
+  padding: 20rpx;
+  margin: 20rpx;
+  border-radius: 16rpx;
+  padding-right: 40rpx;
+}
+
+.date-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 24rpx;
+  margin-right: 16rpx;
+  border-radius: 12rpx;
+  background: #f5f5f5;
+  min-width: 100rpx;
+}
+
+.date-tab:last-child {
+  margin-right: 0;
+}
+
+.date-tab.active {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+.tab-day {
+  font-size: 24rpx;
+  margin-bottom: 4rpx;
+}
+
+.tab-date {
+  font-size: 26rpx;
+  font-weight: bold;
+}
+
+.schedule-section {
+  margin: 20rpx;
+}
+
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+  padding: 0 8rpx;
+}
+
+.section-title text {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #333;
+}
+
+.auto-refresh {
+  display: flex;
+  align-items: center;
+  padding: 8rpx 16rpx;
+  background: #f5f5f5;
+  border-radius: 20rpx;
+}
+
+.refresh-icon {
+  font-size: 28rpx;
+  margin-right: 8rpx;
+  opacity: 0.5;
+}
+
+.refresh-icon.active {
+  opacity: 1;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.refresh-text {
+  font-size: 24rpx;
+  color: #666;
+}
+
+.match-item {
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.08);
+  display: flex;
+  gap: 20rpx;
+}
+
+.match-time {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  min-width: 100rpx;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #667eea;
+}
+
+.match-content {
+  flex: 1;
+}
+
+.players {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.player-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.player-name {
+  font-size: 28rpx;
+  color: #333;
+  font-weight: 500;
+  flex: 1;
+}
+
+.player-score {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #667eea;
+  min-width: 60rpx;
+  text-align: center;
+}
+
+.vs-divider {
+  text-align: center;
+  font-size: 24rpx;
+  color: #999;
+  padding: 4rpx 0;
+}
+
+.match-meta {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 16rpx;
+}
+
+.round-tag {
+  background: #e6f7ff;
+  color: #1890ff;
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+  font-size: 22rpx;
+}
+
+.status-tag {
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+  font-size: 22rpx;
+}
+
+.status-ongoing {
+  background: #fff7e6;
+  color: #fa8c16;
+}
+
+.status-upcoming {
+  background: #f6ffed;
+  color: #52c41a;
+}
+
+.status-finished {
+  background: #f5f5f5;
+  color: #8c8c8c;
+}
+
+.empty-schedule {
+  text-align: center;
+  padding: 80rpx 0;
+  color: #999;
+  font-size: 28rpx;
+}
+
+.update-time {
+  text-align: center;
+  padding: 20rpx;
+  font-size: 24rpx;
+  color: #999;
+}

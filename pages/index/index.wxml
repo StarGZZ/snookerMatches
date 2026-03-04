@@ -1,0 +1,35 @@
+<view class="container">
+  <view class="header">
+    <text class="title">斯诺克赛事</text>
+    <view class="refresh-btn" bindtap="refreshData">
+      <text class="refresh-icon">🔄</text>
+      <text class="refresh-text">刷新</text>
+    </view>
+  </view>
+  <view class="source">数据来源：snooker.org</view>
+
+  <view class="match-list">
+    <block wx:for="{{matchList}}" wx:key="id">
+      <view class="match-card" bindtap="goDetail" data-id="{{item.id}}">
+        <view class="match-header">
+          <view class="match-status status-{{item.status}}">{{item.statusText}}</view>
+          <view class="match-date">{{item.startDate}}</view>
+        </view>
+        <view class="match-name">{{item.name}}</view>
+        <view class="match-info">
+          <text class="info-item">📍 {{item.location}}</text>
+          <text class="info-item">🏆 奖金: {{item.prize}}</text>
+        </view>
+      </view>
+    </block>
+
+    <view wx:if="{{matchList.length === 0}}" class="empty">
+      <text class="empty-icon">🎱</text>
+      <text class="empty-text">暂无赛事数据</text>
+    </view>
+  </view>
+
+  <view wx:if="{{loading}}" class="loading">
+    <text>加载中...</text>
+  </view>
+</view>

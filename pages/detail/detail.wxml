@@ -1,0 +1,80 @@
+<view class="container">
+  <!-- 比赛基本信息 -->
+  <view class="match-header">
+    <view class="match-title">{{match.name}}</view>
+    <view class="match-badge status-{{match.status}}">{{match.statusText}}</view>
+  </view>
+
+  <view class="info-section">
+    <view class="info-row">
+      <text class="info-label">📅 开始时间</text>
+      <text class="info-value">{{match.startDate}}</text>
+    </view>
+    <view class="info-row">
+      <text class="info-label">📍 比赛地点</text>
+      <text class="info-value">{{match.location}}</text>
+    </view>
+    <view class="info-row">
+      <text class="info-label">🏆 奖金池</text>
+      <text class="info-value">{{match.prize}}</text>
+    </view>
+    <view class="source">数据来源：snooker.org</view>
+  </view>
+
+  <!-- 日期选择器 -->
+  <scroll-view class="date-tabs" scroll-x="true" enable-flex="true" show-scrollbar="false">
+    <block wx:for="{{dateTabs}}" wx:key="date">
+      <view
+        class="date-tab {{activeDate === item.date ? 'active' : ''}}"
+        bindtap="selectDate"
+        data-date="{{item.date}}"
+      >
+        <text class="tab-day">{{item.day}}</text>
+        <text class="tab-date">{{item.date}}</text>
+      </view>
+    </block>
+  </scroll-view>
+
+  <!-- 比赛日程列表 -->
+  <view class="schedule-section">
+    <view class="section-title">
+      <text>📅 比赛日程</text>
+      <view class="auto-refresh" bindtap="toggleAutoRefresh">
+        <text class="refresh-icon {{autoRefresh ? 'active' : ''}}">⚡</text>
+        <text class="refresh-text">实时更新</text>
+      </view>
+    </view>
+
+    <block wx:for="{{currentSchedule}}" wx:key="id">
+      <view class="match-item">
+        <view class="match-time">{{item.time}}</view>
+        <view class="match-content">
+          <view class="players">
+            <view class="player-row">
+              <text class="player-name">{{item.player1}}</text>
+              <text class="player-score">{{item.score1}}</text>
+            </view>
+            <view class="vs-divider">VS</view>
+            <view class="player-row">
+              <text class="player-name">{{item.player2}}</text>
+              <text class="player-score">{{item.score2}}</text>
+            </view>
+          </view>
+          <view class="match-meta">
+            <text class="round-tag">{{item.round}}</text>
+            <text class="status-tag status-{{item.status}}">{{item.statusText}}</text>
+          </view>
+        </view>
+      </view>
+    </block>
+
+    <view wx:if="{{currentSchedule.length === 0}}" class="empty-schedule">
+      <text>暂无比赛安排</text>
+    </view>
+  </view>
+
+  <!-- 最后更新时间 -->
+  <view wx:if="{{lastUpdateTime}}" class="update-time">
+    最后更新: {{lastUpdateTime}}
+  </view>
+</view>
