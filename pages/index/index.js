@@ -9,24 +9,26 @@ Page({
   },
 
   onLoad() {
-    // 清除旧缓存，确保使用最新数据
-    wx.removeStorageSync('matchList')
-    wx.removeStorageSync('lastUpdateTime')
     this.loadMatchList()
   },
 
   onShow() {
     // 页面显示时检查是否需要更新数据（超过5分钟自动刷新）
-    if (this.data.lastUpdateTime) {
-      const now = Date.now()
-      const lastTime = new Date(this.data.lastUpdateTime).getTime()
-      if (now - lastTime > 5 * 60 * 1000) {
-        this.loadMatchList()
-      }
+    const now = Date.now()
+    const lastTime = new Date(this.data.lastUpdateTime).getTime()
+
+    // 如果没有上次更新时间，或者超过5分钟，则刷新
+    if (!lastTime || (now - lastTime > 5 * 60 * 1000)) {
+      this.loadMatchList()
     }
   },
 
   onPullDownRefresh() {
+    // 下拉刷新时，先清空数据并加载最新数据
+    this.setData({
+      matchList: [],
+      loading: true
+    })
     this.loadMatchList()
     setTimeout(() => {
       wx.stopPullDownRefresh()
@@ -35,19 +37,27 @@ Page({
 
   // 加载比赛列表
   loadMatchList() {
-    this.setData({ loading: true })
+    // 先尝试从缓存加载数据，提升用户体验
+    const cachedList = wx.getStorageSync('matchList')
+    const cachedTime = wx.getStorageSync('lastUpdateTime')
+    const hasCache = cachedList && cachedList.length > 0
 
-    if (this.data.useRealData) {
-      // 使用真实API数据
-      this.loadRealMatchList()
+    if (hasCache) {
+      this.setData({
+        matchList: cachedList,
+        lastUpdateTime: cachedTime || new Date().toISOString(),
+        loading: false
+      })
     } else {
-      // 使用模拟数据
-      this.loadMockMatchList()
+      this.setData({ loading: true })
     }
+
+    // 加载真实数据
+    this.loadRealMatchList(cachedList, cachedTime, hasCache)
   },
 
   // 加载真实数据
-  loadRealMatchList() {
+  loadRealMatchList(cachedList, cachedTime, hasCache) {
     console.log('开始加载真实数据...')
     getMatchList()
       .then(data => {
@@ -58,6 +68,12 @@ Page({
           return new Date(a.startDate) - new Date(b.startDate)
         })
         console.log('排序后的数据:', sortedList)
+
+        if (sortedList.length === 0) {
+          console.warn('云函数返回的数据为空')
+          throw new Error('暂无赛事数据')
+        }
+
         this.setData({
           matchList: sortedList,
           loading: false,
@@ -76,34 +92,30 @@ Page({
       })
       .catch(err => {
         console.error('加载真实数据失败:', err)
-        // 检查本地是否有缓存数据
-        const cachedList = wx.getStorageSync('matchList')
-        const cachedTime = wx.getStorageSync('lastUpdateTime')
-        
-        if (cachedList && cachedList.length > 0) {
-          // 使用缓存数据，但提示用户数据可能不是最新的
+        const errorMsg = err.message || err.errMsg || '未知错误'
+        console.error('详细错误信息:', errorMsg)
+
+        // 如果之前加载过缓存数据，就保持显示
+        if (hasCache) {
           this.setData({
-            matchList: cachedList,
             loading: false,
             lastUpdateTime: cachedTime || new Date().toISOString()
           })
           wx.showToast({
-            title: '使用缓存数据，可能不是最新',
+            title: `网络异常: ${errorMsg.substring(0, 20)}`,
             icon: 'none',
             duration: 3000
           })
-          console.log('使用缓存数据，数量:', cachedList.length)
         } else {
-          // 没有缓存数据，显示错误并清空列表
-          wx.showToast({
-            title: '获取真实数据失败: ' + (err.message || '请检查网络连接'),
-            icon: 'none',
-            duration: 3000
-          })
+          // 没有缓存数据，显示详细错误提示
           this.setData({
-            matchList: [],
             loading: false,
             lastUpdateTime: new Date().toISOString()
+          })
+          wx.showToast({
+            title: errorMsg.substring(0, 50),
+            icon: 'none',
+            duration: 4000
           })
         }
       })

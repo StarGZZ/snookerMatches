@@ -44,19 +44,31 @@ Page({
       .then(data => {
         console.log('收到比赛详情数据:', data)
         const match = this.formatMatchDetail(data)
+        console.log('格式化后的比赛信息:', match)
+
         const dateTabs = this.generateDateTabs(match.startDate, match.endDate)
+        console.log('生成的日期选项卡:', dateTabs)
+        console.log('第一个日期选项卡:', dateTabs[0])
 
         this.setData({
           match: match,
           dateTabs: dateTabs,
-          activeDate: dateTabs[0].date
+          activeDate: dateTabs[0]?.date || ''
+        })
+
+        console.log('设置后的数据状态:', {
+          match: this.data.match,
+          dateTabs: this.data.dateTabs,
+          activeDate: this.data.activeDate
         })
 
         // 缓存比赛详情数据
         wx.setStorageSync(`matchDetail-${id}`, match)
         console.log('比赛详情已缓存')
 
-        this.loadScheduleByDate(dateTabs[0].date)
+        if (dateTabs[0]?.date) {
+          this.loadScheduleByDate(dateTabs[0].date)
+        }
         wx.setNavigationBarTitle({ title: match.name || '比赛详情' })
         wx.hideLoading()
       })
