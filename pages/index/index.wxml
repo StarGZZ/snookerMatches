@@ -8,6 +8,24 @@
   </view>
   <view class="source">数据来源：snooker.org</view>
 
+  <!-- 赛事类型切换选项卡 -->
+  <view class="tab-container">
+    <view 
+      class="tab-item {{activeTab === 'all' ? 'active' : ''}}" 
+      bindtap="switchTab" 
+      data-tab="all"
+    >
+      全部比赛
+    </view>
+    <view 
+      class="tab-item {{activeTab === 'main' ? 'active' : ''}}" 
+      bindtap="switchTab" 
+      data-tab="main"
+    >
+      主要赛事
+    </view>
+  </view>
+
   <view class="match-list">
     <block wx:for="{{matchList}}" wx:key="id">
       <view class="match-card" bindtap="goDetail" data-id="{{item.id}}">

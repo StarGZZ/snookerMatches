@@ -5,7 +5,8 @@ Page({
     matchList: [],
     loading: false,
     lastUpdateTime: '',
-    useRealData: true  // 默认使用真实数据
+    useRealData: true,  // 默认使用真实数据
+    activeTab: 'all'    // 当前激活的选项卡：'all'（全部比赛）或 'main'（主要赛事）
   },
 
   onLoad() {
@@ -71,20 +72,48 @@ Page({
     }
 
     // 加载真实数据
-    this.loadRealMatchList(cachedList, cachedTime, validCache)
+    this.loadRealMatchList(cachedList, cachedTime, validCache, this.data.activeTab)
   },
 
   // 加载真实数据
-  loadRealMatchList(cachedList, cachedTime, hasCache) {
-    console.log('开始加载真实数据...')
-    getMatchList()
+  loadRealMatchList(cachedList, cachedTime, hasCache, tour = 'all') {
+    console.log('开始加载真实数据，赛事类型:', tour)
+    getMatchList(tour)
       .then(data => {
-        console.log('收到云函数数据:', data)
+        console.log('收到云函数数据，长度:', data.length, '数据:', data)
         const formattedList = this.formatMatchList(data)
-        // 按开始时间排序（最近的在前）
+        
+        // 按赛季顺序排序：斯诺克赛季从8月开始
+        // 将比赛日期映射到赛季时间线：8月为赛季起点（第0个月），7月为赛季终点（第11个月）
+        const getSeasonOrder = (dateStr) => {
+          const date = new Date(dateStr)
+          const year = date.getFullYear()
+          const month = date.getMonth() + 1  // 1-12
+          
+          let seasonYear, seasonMonth
+          if (month >= 8) {
+            // 8月-12月：属于当前赛季早期
+            seasonYear = year
+            seasonMonth = month - 8  // 0-4 (8月=0, 12月=4)
+          } else {
+            // 1月-7月：属于当前赛季后期（实际是下一日历年的部分）
+            seasonYear = year - 1
+            seasonMonth = month + 4  // 5-11 (1月=5, 7月=11)
+          }
+          
+          // 返回一个可排序的数字：赛季年份 * 100 + 赛季月份
+          return seasonYear * 100 + seasonMonth
+        }
+        
         const sortedList = formattedList.sort((a, b) => {
-          return new Date(a.startDate) - new Date(b.startDate)
+          return getSeasonOrder(a.startDate) - getSeasonOrder(b.startDate)
         })
+        // 调试：输出每个比赛的赛季顺序值
+        console.log('排序后的数据（包含赛季顺序值）:', sortedList.map(item => ({
+          name: item.name,
+          startDate: item.startDate,
+          seasonOrder: getSeasonOrder(item.startDate)
+        })))
         console.log('排序后的数据:', sortedList)
 
         if (sortedList.length === 0) {
@@ -173,6 +202,20 @@ Page({
     wx.navigateTo({
       url: `/pages/detail/detail?id=${id}`
     })
+  },
+
+  // 切换赛事类型选项卡
+  switchTab(e) {
+    const tab = e.currentTarget.dataset.tab
+    if (this.data.activeTab === tab) {
+      return
+    }
+    this.setData({
+      activeTab: tab,
+      matchList: [],
+      loading: true
+    })
+    this.loadMatchList()
   },
 
   // 格式化比赛列表数据
@@ -275,8 +318,8 @@ Page({
     // 计算当前赛季（与云函数逻辑一致）
     const getCurrentSeason = () => {
       const now = new Date()
-      // 6月之前（0-5月）视为上一赛季
-      return now.getMonth() < 5 ? now.getFullYear() - 1 : now.getFullYear()
+      // 8月之前（0-7月）视为上一赛季
+      return now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear()
     }
     
     const seasonYear = getCurrentSeason()
@@ -286,9 +329,9 @@ Page({
     const data = [
       {
         id: `wst-world-championship-${seasonYear}`,
-        name: `${seasonYear} Cazoo World Snooker Championship`,
-        startDate: `${seasonYear}-04-18`,
-        endDate: `${seasonYear}-05-04`,
+        name: `${nextSeasonYear} Cazoo World Snooker Championship`,
+        startDate: `${nextSeasonYear}-04-18`,
+        endDate: `${nextSeasonYear}-05-04`,
         location: 'Crucible Theatre, Sheffield, UK',
         prize: '£2,600,000'
       },
@@ -311,24 +354,24 @@ Page({
       {
         id: `wst-welsh-open-${seasonYear}`,
         name: `${seasonYear} BetVictor Welsh Open`,
-        startDate: `${seasonYear}-02-23`,
-        endDate: `${seasonYear}-03-01`,
+        startDate: `${nextSeasonYear}-02-23`,
+        endDate: `${nextSeasonYear}-03-01`,
         location: 'Venue Cymru, Llandudno, Wales',
         prize: '£90,000'
       },
       {
         id: `wst-players-championship-${seasonYear}`,
         name: `${seasonYear} Players Championship`,
-        startDate: `${seasonYear}-03-16`,
-        endDate: `${seasonYear}-03-22`,
+        startDate: `${nextSeasonYear}-03-16`,
+        endDate: `${nextSeasonYear}-03-22`,
         location: 'Telford International Centre, UK',
         prize: '£400,000'
       },
       {
         id: `wst-tour-championship-${seasonYear}`,
         name: `${seasonYear} Tour Championship`,
-        startDate: `${seasonYear}-03-30`,
-        endDate: `${seasonYear}-04-05`,
+        startDate: `${nextSeasonYear}-03-30`,
+        endDate: `${nextSeasonYear}-04-05`,
         location: 'Venue Cymru, Llandudno, Wales',
         prize: '£400,000'
       },
@@ -343,16 +386,16 @@ Page({
       {
         id: `wst-china-open-${seasonYear}`,
         name: `${seasonYear} China Open`,
-        startDate: `${seasonYear}-03-23`,
-        endDate: `${seasonYear}-03-29`,
+        startDate: `${nextSeasonYear}-03-23`,
+        endDate: `${nextSeasonYear}-03-29`,
         location: 'Beijing, China',
         prize: '£275,000'
       },
       {
         id: `wst-german-masters-${seasonYear}`,
         name: `${seasonYear} BetVictor German Masters`,
-        startDate: `${seasonYear}-02-01`,
-        endDate: `${seasonYear}-02-07`,
+        startDate: `${nextSeasonYear}-02-01`,
+        endDate: `${nextSeasonYear}-02-07`,
         location: 'Tempodrom, Berlin, Germany',
         prize: '£90,000'
       },

@@ -8,15 +8,17 @@ const CLOUD_FN_TIMEOUT = 8000
 
 /**
  * 获取比赛列表
+ * @param {string} tour - 赛事类型：'all'（全部比赛）或 'main'（主要赛事）
  */
-export function getMatchList() {
+export function getMatchList(tour = 'all') {
   return new Promise((resolve, reject) => {
-    console.log('开始调用云函数获取比赛列表...')
+    console.log('开始调用云函数获取比赛列表，赛事类型:', tour)
     cloud.callFunction({
       name: 'getSnookerMatches',
       timeout: CLOUD_FN_TIMEOUT,
       data: {
-        action: 'list'
+        action: 'list',
+        tour: tour
       }
     }).then(res => {
       console.log('云函数返回结果:', res)
