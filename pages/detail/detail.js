@@ -140,12 +140,29 @@ Page({
     const rawPrize = data.prize || data.prize_fund || data.PrizeFund || ''
     const rawStatus = data.status || data.state
     
-    // 格式化日期，去掉时间部分
+    // 格式化日期，去掉时间部分，确保YYYY-MM-DD格式且月份日期补零
     const formatDateString = (dateStr) => {
       if (!dateStr) return ''
       // 如果是ISO格式（包含T），只取日期部分
       if (typeof dateStr === 'string' && dateStr.includes('T')) {
-        return dateStr.split('T')[0]
+        const datePart = dateStr.split('T')[0]
+        // 确保日期部分格式正确
+        if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(datePart)) {
+          const parts = datePart.split('-')
+          const year = parts[0]
+          const month = parts[1].padStart(2, '0')
+          const day = parts[2].padStart(2, '0')
+          return `${year}-${month}-${day}`
+        }
+        return datePart
+      }
+      // 如果是YYYY-M-D或YYYY-MM-DD格式
+      if (typeof dateStr === 'string' && /^\d{4}-\d{1,2}-\d{1,2}$/.test(dateStr)) {
+        const parts = dateStr.split('-')
+        const year = parts[0]
+        const month = parts[1].padStart(2, '0')
+        const day = parts[2].padStart(2, '0')
+        return `${year}-${month}-${day}`
       }
       // 如果是其他格式的日期字符串，尝试解析
       if (typeof dateStr === 'string') {
@@ -218,10 +235,28 @@ Page({
     // 确保结束日期不早于开始日期
     const effectiveEnd = end >= start ? end : new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000)
 
-    // 防止异常日期导致无限增长，最多生成 40 天
+    // 检查日期范围是否合理（斯诺克比赛通常不超过30天）
     const dayMs = 24 * 60 * 60 * 1000
+    const maxReasonableDays = 30
+    const daysDiff = Math.round((effectiveEnd - start) / dayMs) + 1
+    
+    // 如果日期范围过长（超过30天）或开始日期和结束日期年份差超过1年，使用默认范围
+    if (daysDiff > maxReasonableDays || (effectiveEnd.getFullYear() - start.getFullYear() > 1)) {
+      console.warn('日期范围异常，使用默认范围:', {
+        开始日期: start.toISOString(),
+        结束日期: effectiveEnd.toISOString(),
+        天数差: daysDiff,
+        年份差: effectiveEnd.getFullYear() - start.getFullYear()
+      })
+      const now = new Date()
+      const defaultStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      const defaultEnd = new Date(defaultStart.getTime() + 6 * 24 * 60 * 60 * 1000)
+      return this.generateDefaultDateTabs(defaultStart, defaultEnd, weekDays)
+    }
+
+    // 防止异常日期导致无限增长，最多生成 40 天
     const maxDays = 40
-    const totalDays = Math.min(maxDays, Math.max(1, Math.round((effectiveEnd - start) / dayMs) + 1))
+    const totalDays = Math.min(maxDays, Math.max(1, daysDiff))
 
     console.log('生成日期范围:', totalDays, '天，从', start.toISOString(), '到', effectiveEnd.toISOString())
 
