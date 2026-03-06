@@ -9,21 +9,35 @@ const CLOUD_FN_TIMEOUT = 8000
 /**
  * 获取比赛列表
  * @param {string} tour - 赛事类型：'all'（全部比赛）或 'main'（主要赛事）
+ * @param {boolean} forceUpdate - 是否强制从外部API更新数据
  */
-export function getMatchList(tour = 'all') {
+export function getMatchList(tour = 'all', forceUpdate = false) {
   return new Promise((resolve, reject) => {
-    console.log('开始调用云函数获取比赛列表，赛事类型:', tour)
+    console.log('开始调用云函数获取比赛列表，赛事类型:', tour, '强制更新:', forceUpdate)
+    
+    const action = forceUpdate ? 'update' : 'list'
+    
     cloud.callFunction({
       name: 'getSnookerMatches',
       timeout: CLOUD_FN_TIMEOUT,
       data: {
-        action: 'list',
-        tour: tour
+        action: action,
+        tour: tour,
+        force: forceUpdate
       }
     }).then(res => {
       console.log('云函数返回结果:', res)
       if (res.result && res.result.success) {
-        resolve(res.result.data)
+        // 对于update action，返回的数据可能在result.data.data中
+        const data = res.result.data
+        // 如果data本身是数组，直接返回；否则尝试data.data
+        if (Array.isArray(data)) {
+          resolve(data)
+        } else if (data && data.data && Array.isArray(data.data)) {
+          resolve(data.data)
+        } else {
+          resolve(data)
+        }
       } else {
         console.error('云函数返回失败:', res.result)
         reject(new Error(res.result.error || '云函数调用失败'))

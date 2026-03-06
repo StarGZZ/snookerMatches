@@ -1,7 +1,7 @@
 <view class="container">
   <view class="header">
     <text class="title">斯诺克赛事</text>
-    <view class="refresh-btn" bindtap="refreshData">
+    <view class="refresh-btn" bindtap="refreshData" bindlongpress="forceRefresh">
       <text class="refresh-icon">🔄</text>
       <text class="refresh-text">刷新</text>
     </view>

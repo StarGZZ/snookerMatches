@@ -10,6 +10,7 @@ Page({
   },
 
   onLoad() {
+    // 生产环境：简单加载比赛列表
     this.loadMatchList()
   },
 
@@ -195,7 +196,119 @@ Page({
       wx.hideLoading()
     }, 600)
   },
+  
+  // 强制刷新数据（长按触发）
+  forceRefresh() {
+    wx.showModal({
+      title: '强制刷新',
+      content: '强制刷新将从snooker.org API重新获取最新数据，可能会消耗更多时间。确定要强制刷新吗？',
+      success: (res) => {
+        if (res.confirm) {
+          wx.showLoading({ title: '强制刷新中...' })
+          console.log('开始强制刷新数据...')
+          
+          // 清除本地缓存，确保获取最新数据
+          wx.removeStorageSync('matchList')
+          wx.removeStorageSync('lastUpdateTime')
+          
+          // 调用云函数强制更新
+          wx.cloud.callFunction({
+            name: 'getSnookerMatches',
+            data: { 
+              action: 'update',
+              tour: this.data.activeTab,
+              force: true
+            }
+          }).then(res => {
+            wx.hideLoading()
+            console.log('强制更新结果:', res)
+            if (res.result && res.result.success) {
+              console.log('✅ 强制更新成功！')
+              wx.showToast({
+                title: '强制更新成功',
+                icon: 'success',
+                duration: 2000
+              })
+              // 更新成功后重新加载数据
+              this.loadMatchList()
+            } else {
+              wx.showToast({
+                title: '强制更新失败',
+                icon: 'none',
+                duration: 2000
+              })
+            }
+          }).catch(err => {
+            wx.hideLoading()
+            console.error('强制更新失败:', err)
+            wx.showToast({
+              title: '强制更新失败',
+              icon: 'none',
+              duration: 2000
+            })
+          })
+        }
+      }
+    })
+  },
 
+  // 强制初始化数据库（手动触发）
+  forceInitializeDatabase() {
+    wx.showLoading({ title: '初始化中...' })
+    console.log('手动触发数据库初始化...')
+    wx.cloud.callFunction({
+      name: 'getSnookerMatches',
+      data: { 
+        action: 'update',
+        tour: 'all',
+        force: true
+      }
+    }).then(res => {
+      wx.hideLoading()
+      console.log('手动更新结果:', res)
+      if (res.result && res.result.success) {
+        console.log('✅ 数据库初始化成功！')
+        wx.setStorageSync('databaseInitialized', true)
+        wx.showToast({
+          title: '数据库初始化成功',
+          icon: 'success',
+          duration: 2000
+        })
+        // 初始化成功后刷新页面数据
+        this.loadMatchList()
+      } else {
+        wx.showToast({
+          title: '初始化失败',
+          icon: 'none',
+          duration: 2000
+        })
+      }
+    }).catch(err => {
+      wx.hideLoading()
+      console.error('初始化失败:', err)
+      wx.showToast({
+        title: '初始化失败',
+        icon: 'none',
+        duration: 2000
+      })
+    })
+  },
+  
+  // 测试数据库查询性能
+  testDatabasePerformance() {
+    console.log('=== 开始数据库查询性能测试 ===')
+    console.time('数据库查询')
+    wx.cloud.callFunction({
+      name: 'getSnookerMatches',
+      data: { action: 'list', tour: 'all' }
+    }).then(res => {
+      console.timeEnd('数据库查询') // 预期：< 200ms
+      console.log('二次查询数据:', res.result.data.length)
+    }).catch(err => {
+      console.error('性能测试失败:', err)
+    })
+  },
+  
   // 跳转到详情页
   goDetail(e) {
     const id = e.currentTarget.dataset.id

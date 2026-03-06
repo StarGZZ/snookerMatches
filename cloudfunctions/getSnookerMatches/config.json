@@ -2,5 +2,13 @@
   "permissions": {
     "openapi": []
   },
-  "timeout": 20
+  "timeout": 20,
+  "triggers": [
+    {
+      "name": "updateMatches",
+      "type": "timer",
+      "config": "0 0 */6 * * * *",
+      "description": "每6小时自动更新比赛数据"
+    }
+  ]
 }
