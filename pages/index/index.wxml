@@ -1,12 +1,17 @@
 <view class="container">
   <view class="header">
     <text class="title">斯诺克赛事</text>
-    <view class="refresh-btn" bindtap="refreshData" bindlongpress="forceRefresh">
-      <text class="refresh-icon">🔄</text>
-      <text class="refresh-text">刷新</text>
+    <view class="button-group">
+      <view class="refresh-btn" bindtap="refreshData" bindlongpress="forceRefresh">
+        <text class="refresh-icon">🔄</text>
+        <text class="refresh-text">刷新</text>
+      </view>
     </view>
   </view>
-  <view class="source">数据来源：snooker.org</view>
+  <view class="source" bindtap="showDataSourceInfo">
+    <text>数据来源：{{dataSource}} | 最后更新：{{formatTime(lastUpdateTime) || '未知时间'}}</text>
+    <text wx:if="{{dataSource === 'database_cache'}}" class="source-hint">（点击查看详情）</text>
+  </view>
 
   <!-- 赛事类型切换选项卡 -->
   <view class="tab-container">

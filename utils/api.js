@@ -4,7 +4,7 @@
  */
 
 const cloud = wx.cloud
-const CLOUD_FN_TIMEOUT = 8000
+const CLOUD_FN_TIMEOUT = 20000 // 增加到20秒，避免云函数超时
 
 /**
  * 获取比赛列表
@@ -28,15 +28,44 @@ export function getMatchList(tour = 'all', forceUpdate = false) {
     }).then(res => {
       console.log('云函数返回结果:', res)
       if (res.result && res.result.success) {
-        // 对于update action，返回的数据可能在result.data.data中
-        const data = res.result.data
-        // 如果data本身是数组，直接返回；否则尝试data.data
-        if (Array.isArray(data)) {
-          resolve(data)
-        } else if (data && data.data && Array.isArray(data.data)) {
-          resolve(data.data)
+        // 云函数返回的数据格式：{ data: [], source: '', isFallback: false, count: 0, lastUpdate: '', season: 2025 }
+        const result = res.result.data
+        // 确保返回标准格式对象，包含数据和来源信息
+        if (result && typeof result === 'object') {
+          // 如果已经有标准字段，直接返回
+          if (result.data !== undefined) {
+            resolve(result)
+          } else if (Array.isArray(result)) {
+            // 旧格式：直接返回数组，包装为标准格式
+            resolve({
+              data: result,
+              source: 'legacy',
+              isFallback: false,
+              count: result.length,
+              lastUpdate: new Date().toISOString(),
+              season: new Date().getFullYear()
+            })
+          } else {
+            // 其他对象格式，尝试包装
+            resolve({
+              data: result.data || result.matches || [],
+              source: result.source || 'unknown',
+              isFallback: result.isFallback || false,
+              count: result.count || (Array.isArray(result.data) ? result.data.length : 0),
+              lastUpdate: result.lastUpdate || new Date().toISOString(),
+              season: result.season || new Date().getFullYear()
+            })
+          }
         } else {
-          resolve(data)
+          // 非对象数据，包装为标准格式
+          resolve({
+            data: result || [],
+            source: 'unknown',
+            isFallback: false,
+            count: Array.isArray(result) ? result.length : 0,
+            lastUpdate: new Date().toISOString(),
+            season: new Date().getFullYear()
+          })
         }
       } else {
         console.error('云函数返回失败:', res.result)

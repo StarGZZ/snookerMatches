@@ -5,6 +5,7 @@ Page({
     matchList: [],
     loading: false,
     lastUpdateTime: '',
+    dataSource: 'snooker.org', // 数据来源
     useRealData: true,  // 默认使用真实数据
     activeTab: 'all'    // 当前激活的选项卡：'all'（全部比赛）或 'main'（主要赛事）
   },
@@ -59,9 +60,10 @@ Page({
       this.setData({
         matchList: cachedList,
         lastUpdateTime: cachedTime || new Date().toISOString(),
-        loading: false
+        loading: false,
+        dataSource: 'database_cache'  // 明确标记数据来源为数据库缓存
       })
-      console.log('使用有效缓存数据')
+      console.log('使用有效缓存数据，最后更新时间:', cachedTime)
     } else {
       // 缓存无效，清除缓存
       if (cachedList && cachedList.length > 0) {
@@ -79,10 +81,28 @@ Page({
   // 加载真实数据
   loadRealMatchList(cachedList, cachedTime, hasCache, tour = 'all') {
     console.log('开始加载真实数据，赛事类型:', tour)
+    console.log('缓存数据状态:', {
+      有缓存数据: !!cachedList,
+      缓存数据量: cachedList ? cachedList.length : 0,
+      缓存有效: hasCache,
+      缓存时间: cachedTime
+    })
+    
     getMatchList(tour)
-      .then(data => {
-        console.log('收到云函数数据，长度:', data.length, '数据:', data)
-        const formattedList = this.formatMatchList(data)
+      .then(result => {
+        console.log('收到云函数数据，完整结果:', result)
+        console.log('数据来源:', result.source, '数量:', result.count, '最后更新时间:', result.lastUpdate)
+        console.log('数据是否为数组:', Array.isArray(result.data), '数据长度:', result.data ? result.data.length : 0)
+        
+        const matchArray = result.data || []
+        console.log('提取的比赛数组长度:', matchArray.length)
+        
+        if (matchArray.length === 0) {
+          console.warn('警告: 云函数返回空数据数组')
+          console.warn('完整结果结构:', JSON.stringify(result, null, 2))
+        }
+        
+        const formattedList = this.formatMatchList(matchArray)
         
         // 按赛季顺序排序：斯诺克赛季从8月开始
         // 将比赛日期映射到赛季时间线：8月为赛季起点（第0个月），7月为赛季终点（第11个月）
@@ -116,21 +136,51 @@ Page({
           seasonOrder: getSeasonOrder(item.startDate)
         })))
         console.log('排序后的数据:', sortedList)
+        console.log('排序后的数据长度:', sortedList.length)
+        console.log('数据来源:', result.source)
+        console.log('最后更新时间:', result.lastUpdate)
 
         if (sortedList.length === 0) {
-          console.warn('云函数返回的数据为空')
-          throw new Error('暂无赛事数据')
+          console.warn('云函数返回的数据为空，尝试使用其他数据源')
+          console.warn('原始数据数组长度:', matchArray.length)
+          console.warn('格式化后数据长度:', formattedList.length)
+          console.warn('排序后数据长度:', sortedList.length)
+          // 如果云函数返回空数据，但有缓存数据，使用缓存数据
+          if (hasCache && cachedList && cachedList.length > 0) {
+            console.log('使用缓存数据替代空数据，缓存数据长度:', cachedList.length)
+            this.setData({
+              matchList: cachedList,
+              loading: false,
+              lastUpdateTime: cachedTime || new Date().toISOString(),
+              dataSource: 'database_cache'
+            })
+            wx.showToast({
+              title: '使用缓存数据',
+              icon: 'none',
+              duration: 2000
+            })
+            return
+          }
+          
+          // 如果没有缓存数据，使用模拟数据
+          console.log('没有缓存数据，使用模拟数据')
+          this.loadMockMatchList()
+          return
         }
 
+        console.log('设置页面数据，数据源:', result.source, '最后更新时间:', result.lastUpdate)
+        const lastUpdateTime = result.lastUpdate || new Date().toISOString()
+        console.log('使用的最后更新时间:', lastUpdateTime)
         this.setData({
           matchList: sortedList,
           loading: false,
-          lastUpdateTime: new Date().toISOString()
+          lastUpdateTime: lastUpdateTime,
+          dataSource: result.source || 'snooker.org'
         })
 
         // 缓存数据到本地
         wx.setStorageSync('matchList', sortedList)
-        wx.setStorageSync('lastUpdateTime', new Date().toISOString())
+        wx.setStorageSync('lastUpdateTime', result.lastUpdate || new Date().toISOString())
 
         wx.showToast({
           title: '数据已更新',
@@ -145,12 +195,15 @@ Page({
 
         // 如果之前加载过缓存数据，就保持显示
         if (hasCache) {
+          // 确保缓存数据仍然显示
           this.setData({
             loading: false,
-            lastUpdateTime: cachedTime || new Date().toISOString()
+            lastUpdateTime: cachedTime || new Date().toISOString(),
+            dataSource: 'database_cache'  // 明确标记数据来源为数据库缓存
+            // matchList 已经在 loadMatchList 中设置，这里不需要重复设置
           })
           wx.showToast({
-            title: `网络异常: ${errorMsg.substring(0, 20)}`,
+            title: `网络异常，使用缓存数据: ${errorMsg.substring(0, 20)}`,
             icon: 'none',
             duration: 3000
           })
@@ -158,13 +211,18 @@ Page({
           // 没有缓存数据，显示详细错误提示
           this.setData({
             loading: false,
-            lastUpdateTime: new Date().toISOString()
+            lastUpdateTime: new Date().toISOString(),
+            dataSource: 'error_fallback'  // 标记为错误回退
           })
           wx.showToast({
             title: errorMsg.substring(0, 50),
             icon: 'none',
             duration: 4000
           })
+          
+          // 如果既没有缓存数据，也没有API数据，尝试使用模拟数据
+          console.log('尝试加载模拟数据作为最后备选方案')
+          this.loadMockMatchList()
         }
       })
   },
@@ -172,20 +230,22 @@ Page({
   // 加载模拟数据（作为后备方案）
   loadMockMatchList() {
     console.log('开始加载模拟数据...')
-    setTimeout(() => {
-      const matchList = this.getMockMatchList()
-      console.log('模拟数据加载完成，matchList:', matchList)
-      // 数据已在 getMockMatchList 中排序
-      this.setData({
-        matchList: matchList,
-        loading: false,
-        lastUpdateTime: new Date().toISOString()
-      })
-      wx.showToast({
-        title: '使用演示数据',
-        icon: 'none'
-      })
-    }, 500)
+    const matchList = this.getMockMatchList()
+    console.log('模拟数据加载完成，matchList:', matchList)
+    // 数据已在 getMockMatchList 中排序
+    const lastUpdateTime = new Date().toISOString()
+    console.log('模拟数据最后更新时间:', lastUpdateTime)
+    this.setData({
+      matchList: matchList,
+      loading: false,
+      lastUpdateTime: lastUpdateTime,
+      dataSource: 'mock_data'  // 标记为模拟数据
+    })
+    console.log('页面数据已设置，dataSource: mock_data, lastUpdateTime:', lastUpdateTime)
+    wx.showToast({
+      title: '使用演示数据',
+      icon: 'none'
+    })
   },
 
   // 刷新数据
@@ -224,13 +284,32 @@ Page({
             console.log('强制更新结果:', res)
             if (res.result && res.result.success) {
               console.log('✅ 强制更新成功！')
-              wx.showToast({
-                title: '强制更新成功',
-                icon: 'success',
-                duration: 2000
-              })
-              // 更新成功后重新加载数据
-              this.loadMatchList()
+              const updateResult = res.result.data
+              console.log('更新数据:', updateResult)
+
+              // 检查是否有实际的数据
+              if (updateResult && updateResult.data && Array.isArray(updateResult.data)) {
+                // 有比赛数据，使用这个数据
+                const formattedList = this.formatMatchList(updateResult.data)
+                this.setData({
+                  matchList: formattedList,
+                  loading: false,
+                  lastUpdateTime: updateResult.lastUpdate || new Date().toISOString(),
+                  dataSource: updateResult.source || 'snooker.org'
+                })
+                // 缓存数据
+                wx.setStorageSync('matchList', formattedList)
+                wx.setStorageSync('lastUpdateTime', updateResult.lastUpdate || new Date().toISOString())
+                wx.showToast({
+                  title: '数据已更新',
+                  icon: 'success',
+                  duration: 2000
+                })
+              } else {
+                // 没有比赛数据，重新加载列表
+                console.log('强制更新返回无比赛数据，重新加载列表')
+                this.loadMatchList()
+              }
             } else {
               wx.showToast({
                 title: '强制更新失败',
@@ -340,7 +419,10 @@ Page({
       
       // 日期格式化函数，确保YYYY-MM-DD格式且月份日期补零
       const formatDateStr = (dateStr) => {
-        if (!dateStr) return ''
+        if (!dateStr) {
+          console.log('日期字符串为空，返回空字符串')
+          return ''
+        }
         // 如果已经是YYYY-MM-DD格式，检查是否需要补零
         if (typeof dateStr === 'string' && /^\d{4}-\d{1,2}-\d{1,2}$/.test(dateStr)) {
           const parts = dateStr.split('-')
@@ -361,18 +443,26 @@ Page({
         } catch (error) {
           console.error('日期解析失败:', error, dateStr)
         }
+        console.log('无法解析日期字符串:', dateStr)
         return dateStr
       }
       
-      return data.map(item => ({
-        id: item.id || item._id,
-        name: item.name || item.tournament_name,
-        startDate: formatDateStr(item.startDate || item.start_date),
-        location: item.location || item.venue,
-        prize: item.prize || item.prize_fund,
-        status: this.determineStatus(item.status || item.state),
-        statusText: this.getStatusText(item.status || item.state)
-      }))
+      const formatted = data.map((item, index) => {
+        console.log(`处理第${index}项:`, item)
+        const formattedItem = {
+          id: item.id || item._id,
+          name: item.name || item.tournament_name,
+          startDate: formatDateStr(item.startDate || item.start_date),
+          location: item.location || item.venue,
+          prize: item.prize || item.prize_fund,
+          status: this.determineStatus(item.status || item.state),
+          statusText: this.getStatusText(item.status || item.state)
+        }
+        console.log(`格式化后第${index}项:`, formattedItem)
+        return formattedItem
+      })
+      console.log('格式化完成，结果:', formatted)
+      return formatted
     }
     console.log('数据不是数组，返回空数组')
     return []
@@ -533,5 +623,32 @@ Page({
     }).sort((a, b) => {
       return new Date(a.startDate) - new Date(b.startDate)
     })
+  },
+
+  // 格式化时间显示
+  formatTime(isoString) {
+    if (!isoString) {
+      console.log('formatTime: 输入为空字符串，返回未知时间')
+      return '未知时间'
+    }
+    try {
+      const date = new Date(isoString)
+      if (isNaN(date.getTime())) {
+        console.log('formatTime: 无效的日期字符串:', isoString)
+        return '未知时间'
+      }
+      // 格式化为本地日期时间，例如 "2025-03-07 15:30:22"
+      const year = date.getFullYear()
+      const month = String(date.getMonth() + 1).padStart(2, '0')
+      const day = String(date.getDate()).padStart(2, '0')
+      const hours = String(date.getHours()).padStart(2, '0')
+      const minutes = String(date.getMinutes()).padStart(2, '0')
+      const seconds = String(date.getSeconds()).padStart(2, '0')
+      return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+    } catch (error) {
+      console.error('时间格式化失败:', error, isoString)
+      return '未知时间'
+    }
   }
+
 })

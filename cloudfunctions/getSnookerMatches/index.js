@@ -15,8 +15,9 @@ const DB_COLLECTION = 'snooker_matches'
  * @param {string} tourType - 赛事类型：'all'或'main'
  */
 async function getMatchListFromDB(season, tourType = 'all') {
+  const startTime = Date.now()
   try {
-    console.log(`从数据库获取比赛列表，赛季: ${season}, 类型: ${tourType}`)
+    console.log(`[${new Date().toISOString()}] 从数据库获取比赛列表，赛季: ${season}, 类型: ${tourType}`)
     const db = cloud.database()
     
     // 构建查询条件
@@ -24,20 +25,27 @@ async function getMatchListFromDB(season, tourType = 'all') {
       season: season
     })
     
+    const queryStartTime = Date.now()
     const result = await query.orderBy('start_date', 'asc').get()
-    console.log(`数据库查询成功，获取 ${result.data.length} 条记录`)
+    const queryTime = Date.now() - queryStartTime
+    console.log(`[${new Date().toISOString()}] 数据库查询成功，获取 ${result.data.length} 条记录，查询耗时: ${queryTime}ms`)
     
     // 如果在内存中过滤主要赛事
     if (tourType === 'main' && result.data.length > 0) {
+      const filterStartTime = Date.now()
       const mainMatches = result.data.filter(match => {
         const id = match.id || ''
         // 过滤掉挑战赛和资格赛
         return !id.includes('challenge') && !id.includes('qual')
       })
-      console.log(`过滤后主要赛事数量: ${mainMatches.length}`)
+      const filterTime = Date.now() - filterStartTime
+      const totalTime = Date.now() - startTime
+      console.log(`[${new Date().toISOString()}] 过滤后主要赛事数量: ${mainMatches.length}，过滤耗时: ${filterTime}ms，总耗时: ${totalTime}ms`)
       return mainMatches
     }
     
+    const totalTime = Date.now() - startTime
+    console.log(`[${new Date().toISOString()}] 数据库查询总耗时: ${totalTime}ms`)
     return result.data
   } catch (error) {
     console.error('从数据库获取比赛列表失败:', error)
@@ -51,24 +59,53 @@ async function getMatchListFromDB(season, tourType = 'all') {
  * @param {number} season - 赛季年份
  */
 async function saveMatchListToDB(matches, season) {
+  const startTime = Date.now()
   try {
     if (!matches || !Array.isArray(matches) || matches.length === 0) {
       console.log('无有效数据保存到数据库')
       return false
     }
     
-    console.log(`开始保存 ${matches.length} 条记录到数据库，赛季: ${season}`)
+    console.log(`[${new Date().toISOString()}] 开始保存 ${matches.length} 条记录到数据库，赛季: ${season}`)
     const db = cloud.database()
-    const now = new Date()
+    const now = new Date().toISOString()  // 使用 ISO 字符串格式，便于读取
     
-    // 先删除该赛季的旧数据
+    // 核心改进：并行清理所有旧数据（非当前赛季和当前赛季）
+    const currentSeason = getCurrentSeason()
+    
     try {
-      const deleteResult = await db.collection(DB_COLLECTION)
-        .where({ season: season })
-        .remove()
-      console.log(`删除旧数据成功，删除 ${deleteResult.stats.removed} 条记录`)
-    } catch (deleteError) {
-      console.warn('删除旧数据失败，继续保存新数据:', deleteError.message)
+      const cleanStartTime = Date.now()
+      console.log(`[${new Date().toISOString()}] 开始并行清理旧数据...`)
+      
+      // 并行执行两个删除操作
+      const [oldSeasonsResult, currentSeasonResult] = await Promise.all([
+        // 删除非当前赛季数据
+        db.collection(DB_COLLECTION)
+          .where({ season: db.command.neq(currentSeason) })
+          .remove()
+          .catch(err => {
+            console.warn('清理非当前赛季数据失败:', err.message)
+            return { stats: { removed: 0 } }
+          }),
+        
+        // 删除当前赛季旧数据
+        db.collection(DB_COLLECTION)
+          .where({ season: currentSeason })
+          .remove()
+          .catch(err => {
+            console.warn('清理当前赛季旧数据失败:', err.message)
+            return { stats: { removed: 0 } }
+          })
+      ])
+      
+      const cleanTime = Date.now() - cleanStartTime
+      const totalRemoved = (oldSeasonsResult.stats?.removed || 0) + (currentSeasonResult.stats?.removed || 0)
+      console.log(`[${new Date().toISOString()}] 并行清理旧数据完成，总计删除 ${totalRemoved} 条记录，耗时: ${cleanTime}ms`)
+      console.log(`  非当前赛季删除: ${oldSeasonsResult.stats?.removed || 0} 条`)
+      console.log(`  当前赛季删除: ${currentSeasonResult.stats?.removed || 0} 条`)
+      
+    } catch (cleanError) {
+      console.warn('并行清理旧数据失败，继续保存新数据:', cleanError.message)
     }
     
     // 分批保存数据（避免单次操作过大）
@@ -107,11 +144,78 @@ async function saveMatchListToDB(matches, season) {
       }
     }
     
-    console.log(`数据保存完成，总计保存 ${savedCount} 条记录`)
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.log(`[${new Date().toISOString()}] 数据保存完成，总计保存 ${savedCount} 条记录，总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
     return savedCount > 0
   } catch (error) {
     console.error('保存比赛列表到数据库失败:', error)
     return false
+  }
+}
+
+/**
+ * 获取数据库数据的最后更新时间
+ * @param {number} season - 赛季年份
+ * @returns {string|null} ISO格式的最后更新时间，如果没有数据则返回null
+ */
+async function getLastUpdateTimeFromDB(season) {
+  const startTime = Date.now()
+  try {
+    const db = cloud.database()
+    
+    // 检查最新更新时间
+    const queryStartTime = Date.now()
+    const latestResult = await db.collection(DB_COLLECTION)
+      .where({ season: season })
+      .orderBy('updated_at', 'desc')
+      .limit(1)
+      .get()
+    const queryTime = Date.now() - queryStartTime
+    
+    if (latestResult.data.length === 0) {
+      console.log(`[${new Date().toISOString()}] 数据库无该赛季数据，无法获取最后更新时间，查询耗时: ${queryTime}ms`)
+      return null
+    }
+    
+    const rawUpdate = latestResult.data[0].updated_at
+    console.log(`[${new Date().toISOString()}] 数据库原始最后更新时间:`, rawUpdate, '类型:', typeof rawUpdate)
+    
+    // 处理不同格式的日期数据（兼容旧数据和新数据）
+    let lastUpdate = null
+    try {
+      if (typeof rawUpdate === 'string') {
+        // 新格式：ISO 字符串，直接使用
+        if (rawUpdate) {
+          const date = new Date(rawUpdate)
+          if (!isNaN(date.getTime())) {
+            lastUpdate = date.toISOString()
+          }
+        }
+      } else if (rawUpdate && typeof rawUpdate === 'object') {
+        // 旧格式：微信云数据库的时间戳格式
+        if (rawUpdate.$date) {
+          lastUpdate = new Date(rawUpdate.$date).toISOString()
+        } else if (rawUpdate.getTime && typeof rawUpdate.getTime === 'function') {
+          lastUpdate = rawUpdate.toISOString()
+        } else {
+          const date = new Date(rawUpdate)
+          if (!isNaN(date.getTime())) {
+            lastUpdate = date.toISOString()
+          }
+        }
+      }
+    } catch (parseError) {
+      console.error('解析数据库最后更新时间失败:', parseError, '原始值:', rawUpdate)
+      lastUpdate = null
+    }
+    
+    const totalTime = Date.now() - startTime
+    console.log(`[${new Date().toISOString()}] 数据库最后更新时间: ${lastUpdate}, 查询耗时: ${queryTime}ms, 总耗时: ${totalTime}ms`)
+    return lastUpdate
+  } catch (error) {
+    console.error('获取数据库最后更新时间失败:', error)
+    return null
   }
 }
 
@@ -121,37 +225,75 @@ async function saveMatchListToDB(matches, season) {
  * @returns {boolean} true表示需要更新，false表示不需要
  */
 async function shouldUpdateFromDB(season) {
+  const startTime = Date.now()
   try {
     const db = cloud.database()
     const now = new Date()
     
     // 检查该赛季是否有数据
+    const countStartTime = Date.now()
     const result = await db.collection(DB_COLLECTION)
       .where({ season: season })
       .count()
+    const countTime = Date.now() - countStartTime
     
     if (result.total === 0) {
-      console.log(`数据库无该赛季数据，需要更新: ${season}`)
+      console.log(`[${new Date().toISOString()}] 数据库无该赛季数据，需要更新: ${season}，查询耗时: ${countTime}ms`)
       return true
     }
     
     // 检查最新更新时间
+    const latestStartTime = Date.now()
     const latestResult = await db.collection(DB_COLLECTION)
       .where({ season: season })
       .orderBy('updated_at', 'desc')
       .limit(1)
       .get()
+    const latestTime = Date.now() - latestStartTime
     
     if (latestResult.data.length === 0) {
+      console.log(`[${new Date().toISOString()}] 数据库有数据但无更新时间，需要更新: ${season}，查询耗时: ${countTime + latestTime}ms`)
       return true
     }
     
-    const latestUpdate = new Date(latestResult.data[0].updated_at)
+    // 正确处理数据库返回的日期格式（兼容旧数据和新数据）
+    const rawUpdate = latestResult.data[0].updated_at
+    console.log(`[${new Date().toISOString()}] 数据库原始更新时间:`, rawUpdate, '类型:', typeof rawUpdate)
+    
+    let latestUpdate
+    try {
+      if (typeof rawUpdate === 'string') {
+        // 新格式：ISO 字符串
+        latestUpdate = new Date(rawUpdate)
+      } else if (rawUpdate && typeof rawUpdate === 'object') {
+        // 旧格式：微信云数据库的时间戳格式
+        if (rawUpdate.$date) {
+          latestUpdate = new Date(rawUpdate.$date)
+        } else if (rawUpdate.getTime && typeof rawUpdate.getTime === 'function') {
+          latestUpdate = rawUpdate
+        } else {
+          latestUpdate = new Date(rawUpdate)
+        }
+      } else {
+        latestUpdate = new Date()
+      }
+      
+      // 检查日期是否有效
+      if (isNaN(latestUpdate.getTime())) {
+        console.warn('数据库更新时间无效，使用当前时间')
+        latestUpdate = new Date()
+      }
+    } catch (parseError) {
+      console.error('解析数据库更新时间失败:', parseError, '使用当前时间')
+      latestUpdate = new Date()
+    }
+    
     const hoursDiff = (now - latestUpdate) / (1000 * 60 * 60)
     
-    // 如果数据超过1小时未更新，则重新获取（降低阈值以更快获取真实数据）
-    const needUpdate = hoursDiff > 1
-    console.log(`数据库检查: 最后更新 ${hoursDiff.toFixed(1)} 小时前，需要更新: ${needUpdate}`)
+    // 如果数据超过72小时未更新，则重新获取（延长缓存时间，减少对外部API的依赖）
+    const needUpdate = hoursDiff > 72
+    const totalTime = Date.now() - startTime
+    console.log(`[${new Date().toISOString()}] 数据库检查: 最后更新 ${hoursDiff.toFixed(1)} 小时前，需要更新: ${needUpdate}，总耗时: ${totalTime}ms`)
     return needUpdate
   } catch (error) {
     console.error('检查数据库更新状态失败:', error)
@@ -165,16 +307,20 @@ async function shouldUpdateFromDB(season) {
  * @returns {Array} 更新后的比赛列表
  */
 async function updateMatchListFromExternal(tourType = 'all') {
+  const startTime = Date.now()
+  const startTimeISO = new Date(startTime).toISOString()
+  
   try {
-    console.log(`从外部API更新比赛列表，类型: ${tourType}`)
+    console.log(`\n[${startTimeISO}] ===== 开始updateMatchListFromExternal =====`)
+    console.log(`赛事类型: ${tourType}`)
     const currentSeason = getCurrentSeason()
-    console.log(`当前赛季: ${currentSeason}, 正在请求 snooker.org API...`)
+    console.log(`当前赛季: ${currentSeason}`)
     console.log(`强制跳过缓存，直接调用 snooker.org API...`)
     
     // 调用现有的外部API逻辑，跳过缓存强制获取最新数据
     const externalData = await withTimeout(
       getSnookerEvents(currentSeason, tourType, true),  // skipCache = true
-      10000, // 增加超时时间到10秒，确保API有足够时间响应
+      10000, // 增加到10秒，确保外部API有充足响应时间
       'snooker.org API请求超时'
     )
     
@@ -187,11 +333,19 @@ async function updateMatchListFromExternal(tourType = 'all') {
       await saveMatchListToDB(formatted, currentSeason)
       console.log(`数据库更新完成，保存 ${formatted.length} 条记录`)
       
+      const endTime = Date.now()
+      const totalTime = endTime - startTime
+      console.log(`\n[${new Date().toISOString()}] ===== updateMatchListFromExternal 成功完成 =====`)
+      console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+      console.log(`数据来源: snooker.org, 数据数量: ${formatted.length}`)
+      
       return {
         data: formatted,
         source: 'snooker.org',
         isFallback: false,
-        count: formatted.length
+        count: formatted.length,
+        lastUpdate: new Date().toISOString(),
+        season: currentSeason
       }
     } else {
       console.warn('外部API返回空数据，使用降级数据')
@@ -203,31 +357,16 @@ async function updateMatchListFromExternal(tourType = 'all') {
       throw new Error('外部API返回空数据')
     }
   } catch (externalError) {
-    console.warn('========== 外部API更新失败，使用降级数据 ==========')
-    console.warn('错误信息:', externalError.message)
-    console.warn('错误堆栈:', externalError.stack)
-    console.warn('=================================================')
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.warn(`\n[${new Date().toISOString()}] ===== 外部API更新失败 =====`)
+    console.warn(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+    console.warn(`错误信息: ${externalError.message}`)
+    console.warn('====================================')
     
-    // 使用降级数据
-    const currentSeason = getCurrentSeason()
-    const fallbackData = tourType === 'all' 
-      ? getAllSeasonFallback(currentSeason)
-      : getCurrentSeasonFallback(currentSeason)
-    
-    console.log(`降级数据加载完成，数量: ${fallbackData.length}`)
-    console.log('降级数据样本:', fallbackData[0])
-    
-    // 保存降级数据到数据库
-    await saveMatchListToDB(fallbackData, currentSeason)
-    console.log(`降级数据保存到数据库完成，保存 ${fallbackData.length} 条记录`)
-    
-    return {
-      data: fallbackData,
-      source: 'fallback',
-      isFallback: true,
-      count: fallbackData.length,
-      error: externalError.message
-    }
+    // 不再返回硬编码降级数据，直接抛出错误
+    // 让上层函数（getMatchList）处理，返回数据库现有数据
+    throw externalError
   }
 }
 
@@ -242,12 +381,16 @@ const API_CONFIG = {
   // snooker.org 官方数据源（网站页面API）
   // 实际可用地址: https://www.snooker.org/res/index.asp?season=2025&tour=all&template=2
   // template=2 可能返回JSON格式数据
-  SNOOKER_ORG: 'https://www.snooker.org/res/index.asp'
+  SNOOKER_ORG: 'https://www.snooker.org/res/index.asp',
+  
+  // snooker.org 官方API (https://api.snooker.org)
+  // t=5: 获取赛事列表，s=赛季年份
+  SNOOKER_API: 'https://api.snooker.org'
 }
 
 // snooker.org 授权请求头（标识你的应用，可以是任何字符串）
 // 参考: https://api.snooker.org/ - "Set the X-Requested-By header to something (anything)"
-const SNOOKER_REQUESTED_BY = 'snooker.org API Client'
+const SNOOKER_REQUESTED_BY = 'StarWeChat261'  // 根据用户提供的脚本更新
 
 // 内存缓存：减少外部请求次数（snooker.org 限流 10 次/分钟）
 const _cache = {
@@ -320,6 +463,9 @@ function _formatTimeFromUtc(iso) {
  * 通用API请求函数
  */
 async function fetchData(url, options = {}) {
+  const startTime = Date.now()
+  const startTimeISO = new Date(startTime).toISOString()
+  
   try {
     const requestOptions = {
       uri: url,
@@ -328,21 +474,24 @@ async function fetchData(url, options = {}) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json'
       },
-      timeout: 15000, // 增加到15秒，确保完整数据加载
+      timeout: 10000, // 增加到10秒，确保外部API有充足响应时间
       jar: false, // 禁用 cookie jar，防止自动添加 Referer
       followAllRedirects: true, // 跟随所有重定向
       followOriginalHttpMethod: true, // 保持原始 HTTP 方法
       ...options
     }
     
-    console.log('========== 发起HTTP请求 ==========')
+    console.log(`\n[${startTimeISO}] ===== 发起HTTP请求 =====`)
     console.log('请求URL:', url)
     console.log('请求头:', JSON.stringify(requestOptions.headers, null, 2))
     console.log('超时设置:', requestOptions.timeout, '毫秒')
     console.log('=================================')
     
     const result = await request(requestOptions)
-    console.log('========== HTTP请求成功 ==========')
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.log(`\n[${new Date().toISOString()}] ===== HTTP请求成功 =====`)
+    console.log(`请求耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
     console.log('响应数据长度:', Array.isArray(result) ? result.length : '非数组')
     console.log('响应数据类型:', typeof result)
     if (Array.isArray(result) && result.length > 0) {
@@ -351,7 +500,10 @@ async function fetchData(url, options = {}) {
     console.log('=================================')
     return result
   } catch (error) {
-    console.error('========== HTTP请求失败 ==========')
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.error(`\n[${new Date().toISOString()}] ===== HTTP请求失败 =====`)
+    console.error(`请求耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
     console.error('错误信息:', error.message)
     console.error('错误状态码:', error.statusCode || '无')
     console.error('请求URL:', url)
@@ -375,13 +527,65 @@ function withTimeout(promise, timeoutMs, timeoutMessage = '请求超时') {
 }
 
 /**
+ * 带重试的通用API请求函数
+ * @param {Function} requestFn - 请求函数，返回Promise
+ * @param {number} maxRetries - 最大重试次数，默认0次（只尝试1次）
+ * @param {number} retryDelay - 重试延迟时间(ms)，默认500
+ * @returns {Promise} 请求结果
+ */
+async function retryRequest(requestFn, maxRetries = 0, retryDelay = 500) {
+  const startTime = Date.now()
+  console.log(`\n[${new Date(startTime).toISOString()}] ===== 开始retryRequest =====`)
+  console.log(`最大重试次数: ${maxRetries} (总共尝试 ${maxRetries + 1} 次)`)
+  
+  let lastError
+  
+  for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    const attemptStartTime = Date.now()
+    console.log(`\n[${new Date().toISOString()}] 尝试 #${attempt}/${maxRetries + 1} 开始...`)
+    
+    try {
+      const result = await requestFn()
+      const attemptEndTime = Date.now()
+      const attemptDuration = attemptEndTime - attemptStartTime
+      console.log(`[${new Date().toISOString()}] 尝试 #${attempt} 成功! 耗时: ${attemptDuration}ms`)
+      
+      const totalTime = attemptEndTime - startTime
+      console.log(`[${new Date().toISOString()}] ===== retryRequest完成 =====`)
+      console.log(`总耗时: ${totalTime}ms, 尝试次数: ${attempt}/${maxRetries + 1}`)
+      return result
+    } catch (error) {
+      const attemptEndTime = Date.now()
+      const attemptDuration = attemptEndTime - attemptStartTime
+      console.error(`[${new Date().toISOString()}] 尝试 #${attempt} 失败! 耗时: ${attemptDuration}ms`)
+      console.error(`错误信息: ${error.message}`)
+      lastError = error
+      
+      if (attempt < maxRetries + 1) {
+        console.log(`[${new Date().toISOString()}] 等待 ${retryDelay}ms 后重试...`)
+        await new Promise(resolve => setTimeout(resolve, retryDelay))
+      }
+    }
+  }
+  
+  const endTime = Date.now()
+  const totalTime = endTime - startTime
+  console.error(`\n[${new Date().toISOString()}] ===== retryRequest完全失败 =====`)
+  console.error(`所有 ${maxRetries + 1} 次尝试均失败，总耗时: ${totalTime}ms`)
+  throw lastError || new Error(`请求失败，总耗时: ${totalTime}ms`)
+}
+
+/**
  * 获取比赛列表
  * 从多个数据源尝试获取，每个数据源都有超时保护
  * @param {string} tourType - 赛事类型：'all'（全部比赛）或 'main'（主要赛事）
  */
 async function getMatchList(tourType = 'all') {
+  const startTime = Date.now()
+  const startTimeISO = new Date(startTime).toISOString()
+  
   try {
-    console.log('===== 开始获取比赛列表（数据库优先） =====')
+    console.log(`\n[${startTimeISO}] ===== 开始获取比赛列表（数据库优先） =====`)
     console.log('赛事类型:', tourType)
     
     const currentSeason = getCurrentSeason()
@@ -397,8 +601,41 @@ async function getMatchList(tourType = 'all') {
       const needUpdate = await shouldUpdateFromDB(currentSeason)
       
       if (!needUpdate) {
-        console.log('数据库数据新鲜，直接返回数据库数据')
-        return dbMatches
+        console.log('✅ 数据库数据新鲜（72小时内），直接返回缓存数据')
+        // 获取数据库中的实际最后更新时间
+        const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+        // 确保lastUpdate是有效的ISO字符串
+        let lastUpdateStr
+        if (dbLastUpdate) {
+          try {
+            const date = new Date(dbLastUpdate)
+            if (!isNaN(date.getTime())) {
+              lastUpdateStr = date.toISOString()
+            } else {
+              console.warn('数据库最后更新时间无效，使用当前时间:', dbLastUpdate)
+              lastUpdateStr = new Date().toISOString()
+            }
+          } catch (error) {
+            console.error('解析数据库最后更新时间失败:', error)
+            lastUpdateStr = new Date().toISOString()
+          }
+        } else {
+          lastUpdateStr = new Date().toISOString()
+        }
+        console.log('最后更新时间:', lastUpdateStr)
+        const endTime = Date.now()
+        const totalTime = endTime - startTime
+        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（数据库缓存） =====`)
+        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+        console.log(`数据来源: database_cache, 数据数量: ${dbMatches.length}`)
+        return {
+          data: dbMatches,
+          source: 'database_cache',
+          isFallback: false,
+          count: dbMatches.length,
+          lastUpdate: lastUpdateStr,
+          season: currentSeason
+        }
       }
       
       console.log('数据库数据需要更新，开始从外部API同步...')
@@ -433,22 +670,92 @@ async function getMatchList(tourType = 'all') {
       }
       
       if (updatedMatches && updatedMatches.length > 0) {
-        return updatedMatches
+        const endTime = Date.now()
+        const totalTime = endTime - startTime
+        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（外部API） =====`)
+        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+        console.log(`数据来源: ${matchSource}, 是否降级: ${isFallback}, 数据数量: ${updatedMatches.length}`)
+        return {
+          data: updatedMatches,
+          source: matchSource,
+          isFallback: isFallback,
+          count: updatedMatches.length,
+          lastUpdate: new Date().toISOString(),
+          season: currentSeason
+        }
       } else {
         console.warn('外部API更新返回空数据，尝试使用数据库中的降级数据')
         // 如果数据库有数据（即使是旧的），返回数据库数据
         if (dbMatches && dbMatches.length > 0) {
           console.log(`返回数据库中的 ${dbMatches.length} 条降级数据`)
-          return dbMatches
+          // 获取数据库中的实际最后更新时间
+          const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+          const endTime = Date.now()
+          const totalTime = endTime - startTime
+          console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（数据库降级） =====`)
+          console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+          console.log(`数据来源: database_cache（外部API返回空数据）, 数据数量: ${dbMatches.length}`)
+          return {
+            data: dbMatches,
+            source: 'database_cache',
+            isFallback: false,
+            count: dbMatches.length,
+            lastUpdate: dbLastUpdate || new Date().toISOString(),
+            season: currentSeason
+          }
         }
         // 否则继续使用内置降级数据
       }
     } catch (updateError) {
       console.warn('外部API更新失败:', updateError.message)
+      console.log('数据库数据状态:', dbMatches ? '有数据，数量:' + dbMatches.length : '无数据')
       // 如果数据库有数据（即使是旧的），返回数据库数据
       if (dbMatches && dbMatches.length > 0) {
         console.log(`外部API失败，返回数据库中的 ${dbMatches.length} 条降级数据`)
-        return dbMatches
+        // 获取数据库中的实际最后更新时间
+        const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+        const endTime = Date.now()
+        const totalTime = endTime - startTime
+        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（外部API失败，数据库降级） =====`)
+        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+        console.log(`数据来源: database_cache（外部API失败）, 数据数量: ${dbMatches.length}`)
+        return {
+          data: dbMatches,
+          source: 'database_cache',
+          isFallback: false,
+          count: dbMatches.length,
+          lastUpdate: dbLastUpdate || new Date().toISOString(),
+          season: currentSeason
+        }
+      } else {
+        // 数据库无数据，直接返回内置降级数据
+        console.log('数据库无数据，直接返回内置降级数据')
+        const fallbackData = tourType === 'all' 
+          ? getAllSeasonFallback(currentSeason)
+          : getCurrentSeasonFallback(currentSeason)
+        console.log(`内置降级数据加载完成，数量: ${fallbackData.length}`)
+        
+        // 尝试将降级数据保存到数据库以备下次使用
+        try {
+          await saveMatchListToDB(fallbackData, currentSeason)
+          console.log(`降级数据已保存到数据库，保存 ${fallbackData.length} 条记录`)
+        } catch (saveError) {
+          console.error('保存降级数据到数据库失败:', saveError.message)
+        }
+        
+        const endTime = Date.now()
+        const totalTime = endTime - startTime
+        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（内置降级数据） =====`)
+        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+        console.log(`数据来源: hardcoded_fallback, 数据数量: ${fallbackData.length}`)
+        return {
+          data: fallbackData,
+          source: 'hardcoded_fallback',
+          isFallback: true,
+          count: fallbackData.length,
+          lastUpdate: new Date().toISOString(),
+          season: currentSeason
+        }
       }
     }
     
@@ -471,7 +778,19 @@ async function getMatchList(tourType = 'all') {
       console.error('保存降级数据到数据库失败:', saveError.message)
     }
     
-    return fallbackData
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（内置降级数据） =====`)
+    console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+    console.log(`数据来源: hardcoded_fallback, 数据数量: ${fallbackData.length}`)
+    return {
+      data: fallbackData,
+      source: 'hardcoded_fallback',
+      isFallback: true,
+      count: fallbackData.length,
+      lastUpdate: new Date().toISOString(),
+      season: currentSeason
+    }
 
   } catch (error) {
     console.error('获取比赛列表失败:', error)
@@ -484,7 +803,19 @@ async function getMatchList(tourType = 'all') {
         ? getAllSeasonFallback(currentSeason)
         : getCurrentSeasonFallback(currentSeason)
       console.log('错误恢复：使用内置降级数据，数量:', fallbackData.length)
-      return fallbackData
+      const endTime = Date.now()
+      const totalTime = endTime - startTime
+      console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（内置降级数据） =====`)
+      console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+      console.log(`数据来源: hardcoded_fallback, 数据数量: ${fallbackData.length}`)
+    return {
+      data: fallbackData,
+      source: 'hardcoded_fallback',
+      isFallback: true,
+      count: fallbackData.length,
+      lastUpdate: new Date().toISOString(),
+      season: currentSeason
+    }
     } catch (finalError) {
       console.error('最终降级方案也失败:', finalError)
       return []
@@ -514,55 +845,119 @@ async function fetchFromCuetracker(endpoint) {
 }
 
 /**
+ * 从api.snooker.org获取数据（使用用户提供的API端点）
+ */
+async function fetchFromSnookerApi(season, tourType = 'all') {
+  try {
+    console.log(`调用 api.snooker.org API，赛季: ${season}, 类型: ${tourType}`)
+    
+    // 构建URL: https://api.snooker.org/?t=5&s=2025
+    // t=5: 获取赛事列表
+    // s: 赛季年份
+    let url = `${API_CONFIG.SNOOKER_API}/?t=5&s=${season}`
+    
+    // 可以添加更多参数，比如tour=all/main
+    // 但api.snooker.org可能不支持tour参数，我们根据返回数据过滤
+    console.log(`请求URL: ${url}`)
+    
+    const options = {
+      headers: {
+        'X-Requested-By': SNOOKER_REQUESTED_BY,
+        'Accept': 'application/json',
+        'User-Agent': 'SnookerScheduleMiniProgram/1.0'
+      },
+      timeout: 10000,
+      json: true
+    }
+    
+    console.log('发送请求到 api.snooker.org...')
+    const response = await request({
+      uri: url,
+      ...options
+    })
+    
+    console.log(`api.snooker.org API 响应成功，数据数量: ${Array.isArray(response) ? response.length : '非数组'}`)
+    
+    if (!Array.isArray(response)) {
+      throw new Error('API返回非数组数据: ' + typeof response)
+    }
+    
+    // 根据tourType过滤数据
+    let filteredData = response
+    if (tourType === 'main') {
+      // 过滤掉Q Tour和其他非主要赛事
+      filteredData = response.filter(item => {
+        const tour = item.Tour || item.tour || ''
+        const name = item.Name || item.name || ''
+        const related = item.Related || item.related || ''
+        
+        // 主要赛事: tour为'main'或为空，且不包含'Q Tour'等关键词
+        return (tour === 'main' || tour === '' || tour === null) &&
+               !name.includes('Q Tour') &&
+               !related.includes('qtour')
+      })
+      console.log(`过滤后主要赛事数量: ${filteredData.length}（原始: ${response.length}）`)
+    }
+    
+    return filteredData
+    
+  } catch (error) {
+    console.error('api.snooker.org API请求失败:', error.message)
+    console.error('错误详情:', error)
+    throw error
+  }
+}
+
+/**
  * 从Snooker.org获取数据
  */
 async function fetchFromSnookerOrg(endpoint, params = {}) {
-  const baseUrl = API_CONFIG.SNOOKER_ORG
+  // 使用官方API: https://api.snooker.org
+  const baseUrl = API_CONFIG.SNOOKER_API
   let url = baseUrl
 
-  // 实际可用地址格式: https://www.snooker.org/res/index.asp?season=2025&tour=all&template=2
+  // API参数说明:
+  // t=5: 获取赛事列表
+  // s=赛季年份 (如2025)
+  // e=赛事ID (获取特定赛事详情)
   if (endpoint === 'tournaments') {
     // snooker.org 的赛季是跨年制，例如 2025 代表 2025/2026 赛季
-    // 简单规则：每年 6 月之前视为上一赛季
-    const now = new Date()
-    const defaultSeason = now.getMonth() < 5 ? now.getFullYear() - 1 : now.getFullYear()
+    // 使用统一的赛季计算函数
+    const defaultSeason = getCurrentSeason()
     const season = params.season || defaultSeason
-    const tour = params.tour || 'main'
+    const tour = params.tour || 'all' // 默认获取所有赛事
     
-    // 使用新的参数格式：season, tour, template=2（可能表示JSON格式）
-    url = `${baseUrl}?season=${season}&tour=${tour}&template=2`
+    // 根据tour参数决定是否过滤赛事类型
+    // 注意：官方API可能不支持tour参数，我们在这里处理过滤
+    url = `${baseUrl}/?t=5&s=${season}`
   } else if (endpoint === 'matches') {
     const eventId = params.eventId
     if (!eventId) {
       throw new Error('Snooker.org matches endpoint requires eventId')
     }
-    // 对于单个赛事，可能需要不同的参数格式
-    // 暂时使用相同的格式，但可能需要调整
-    url = `${baseUrl}?event=${eventId}&template=2`
+    // 获取特定赛事的比赛日程
+    // t=6: 获取赛事赛程
+    // e=赛事ID
+    url = `${baseUrl}/?t=6&e=${eventId}`
   } else {
     throw new Error('Unsupported Snooker.org endpoint: ' + endpoint)
   }
 
-  // 使用简单的请求头，模仿浏览器访问
-  // 包含必要的头信息以避免401.5错误
+  // 使用官方API要求的请求头
+  // 参考: https://api.snooker.org/ - "Set the X-Requested-By header to something (anything)"
   const options = {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.5',
-      'Accept-Encoding': 'gzip, deflate',
-      'Connection': 'keep-alive',
-      'Upgrade-Insecure-Requests': '1',
-      'X-Requested-By': 'snooker.org API Client',
-      'Referer': 'https://www.snooker.org/',
-      'Origin': 'https://www.snooker.org'
+      'X-Requested-By': 'StarWeChat261',
+      'Accept': 'application/json',
+      'User-Agent': 'SnookerScheduleMiniProgram/1.0',
+      'Content-Type': 'application/json'
     },
     // 禁用自动添加请求头
     followAllRedirects: true,
     followOriginalHttpMethod: true,
     jar: false, // 禁用 cookie jar
     gzip: true,
-    json: false // 不自动解析为JSON，因为可能返回HTML
+    json: true // 自动解析为JSON
   }
 
   console.log('========== 请求 snooker.org API ==========')
@@ -572,71 +967,71 @@ async function fetchFromSnookerOrg(endpoint, params = {}) {
   console.log('=========================================')
   
   try {
-    console.log('正在发送请求到 snooker.org...')
-    const response = await fetchData(url, options)
+    console.log('正在发送请求到 snooker.org（0次重试，只尝试1次）...')
+    const response = await retryRequest(
+      () => fetchData(url, options),
+      0,  // 0次重试，只尝试1次，避免超时
+      500  // 500ms间隔（基本用不到）
+    )
     
     console.log('========== snooker.org API 响应 ==========')
     console.log('状态: 成功')
     console.log('响应类型:', typeof response)
-    if (typeof response === 'string') {
-      console.log('响应长度:', response.length)
+    
+    // 由于设置了json: true，response应该已经是解析好的JavaScript对象
+    let result = response
+    
+    // 检查response是否为数组
+    if (Array.isArray(response)) {
+      console.log('响应数据长度:', response.length)
+      if (response.length > 0) {
+        console.log('第一项数据样本:', JSON.stringify(response[0], null, 2))
+      }
+    } else if (response && typeof response === 'object') {
+      // 如果response是对象但不是数组，尝试检查是否有数据
+      console.log('响应是对象，类型:', response.constructor.name)
+      // 尝试转换为数组
+      if (response.data && Array.isArray(response.data)) {
+        result = response.data
+        console.log('从data属性获取数组数据，长度:', result.length)
+      } else {
+        // 如果不是数组，尝试转换为数组
+        result = [response]
+        console.log('将对象转换为数组，长度:', result.length)
+      }
+    } else if (typeof response === 'string') {
+      // 如果response是字符串，尝试解析为JSON
+      console.log('响应是字符串，长度:', response.length)
       console.log('响应预览（前500字符）:', response.substring(0, 500))
-    } else if (Buffer.isBuffer(response)) {
-      console.log('响应长度（Buffer）:', response.length)
-      console.log('响应预览（前500字符）:', response.toString().substring(0, 500))
+      try {
+        result = JSON.parse(response)
+        console.log('成功解析字符串为JSON')
+      } catch (jsonError) {
+        console.log('无法解析字符串为JSON:', jsonError.message)
+        result = []
+      }
     } else {
       console.log('响应内容:', response)
+      result = []
     }
     
-    // 尝试解析响应，可能是JSON或HTML
-    let result
-    try {
-      // 首先尝试解析为JSON
-      if (typeof response === 'string') {
-        result = JSON.parse(response)
-      } else if (Buffer.isBuffer(response)) {
-        result = JSON.parse(response.toString())
-      } else {
-        result = response
-      }
-      
-      console.log('成功解析为JSON')
-      console.log('数据长度:', Array.isArray(result) ? result.length : '非数组')
-      if (Array.isArray(result) && result.length > 0) {
-        console.log('第一项数据样本:', JSON.stringify(result[0], null, 2))
-      }
-    } catch (jsonError) {
-      console.log('响应不是JSON，可能是HTML:', jsonError.message)
-      // 尝试解析HTML提取比赛数据
-      result = parseHtmlForMatches(response)
-      if (result.length > 0) {
-        console.log('从HTML解析出', result.length, '个比赛')
-        if (result.length > 0) {
-          console.log('第一项数据样本:', JSON.stringify(result[0], null, 2))
-        }
-      } else {
-        console.log('无法从HTML解析比赛数据，返回空数组')
-      }
+    // 确保结果是数组
+    if (!Array.isArray(result)) {
+      console.log('结果不是数组，转换为数组')
+      result = result ? [result] : []
     }
     
+    console.log('最终数据长度:', result.length)
     console.log('=========================================')
     
     // 检查结果是否有效
-    if (!result) {
-      throw new Error('snooker.org API返回空结果')
+    if (!result || result.length === 0) {
+      throw new Error('snooker.org API返回空数据')
     }
     
-    if (!Array.isArray(result)) {
-      throw new Error('snooker.org API返回非数组数据: ' + typeof result)
-    }
-    
-    if (result.length === 0) {
-      throw new Error('snooker.org API返回空数组，无比赛数据')
-    }
-    
-    // 如果比赛数量太少（少于5个），可能解析不完整
+    // 如果比赛数量太少（少于5个），可能数据不完整
     if (result.length < 5) {
-      console.warn(`警告: 只解析到 ${result.length} 个比赛，可能数据不完整`)
+      console.warn(`警告: 只获取到 ${result.length} 个比赛，可能数据不完整`)
       // 不抛出错误，但记录警告
     }
     
@@ -830,6 +1225,28 @@ function getCurrentSeason() {
   return now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear()
 }
 
+/**
+ * 验证赛季参数，确保使用当前赛季
+ * @param {number} season - 传入的赛季年份
+ * @returns {number} 验证后的赛季年份
+ */
+function validateSeason(season) {
+  const currentSeason = getCurrentSeason()
+  
+  if (season === undefined || season === null) {
+    console.log('未传入赛季参数，使用当前赛季:', currentSeason)
+    return currentSeason
+  }
+  
+  // 如果传入的赛季与当前赛季差异超过1年，使用当前赛季
+  if (Math.abs(season - currentSeason) > 1) {
+    console.warn(`传入的赛季 ${season} 与当前赛季 ${currentSeason} 差异较大，使用当前赛季`)
+    return currentSeason
+  }
+  
+  return season
+}
+
 async function getSnookerEvents(season, tour = 'main', skipCache = false) {
   const key = `${season}:${tour}`
   
@@ -851,10 +1268,35 @@ async function getSnookerEvents(season, tour = 'main', skipCache = false) {
 
   console.log(`snooker.org 缓存未命中，开始请求 API，赛季: ${season}, 类型: ${tour}`)
   const data = await fetchFromSnookerOrg('tournaments', { season, tour })
+  
+  // 根据tour参数过滤数据
+  let filteredData = data
+  if (tour === 'main') {
+    // 主要赛事：过滤掉资格赛、挑战赛等
+    // 根据实际API返回的Tour字段值进行过滤
+    // 从test_result.json看到，主要赛事有 Tour: "main"
+    // 资格赛有 Tour: "q"
+    // 挑战赛可能有其他值
+    filteredData = data.filter(item => {
+      // 保留主要赛事（Tour字段为'main'）
+      const tourValue = item.Tour || ''
+      return tourValue.toLowerCase() === 'main'
+    })
+    console.log(`过滤后主要赛事数量: ${filteredData.length} (原始数量: ${data.length})`)
+    
+    // 如果没有过滤到数据，返回所有数据（避免空列表）
+    if (filteredData.length === 0 && data.length > 0) {
+      console.log('警告: 没有找到Tour字段为"main"的赛事，返回所有数据')
+      filteredData = data
+    }
+  } else {
+    console.log(`使用全部赛事数据，数量: ${data.length}`)
+  }
+  
   // 赛事列表变化不频繁，缓存 30 分钟
-  _setCacheEntry(_cache.eventsBySeason, key, data, 30 * 60 * 1000)
-  console.log(`snooker.org API 数据获取完成，缓存30分钟，数据长度: ${Array.isArray(data) ? data.length : '非数组'}`)
-  return data
+  _setCacheEntry(_cache.eventsBySeason, key, filteredData, 30 * 60 * 1000)
+  console.log(`snooker.org API 数据获取完成，缓存30分钟，数据长度: ${Array.isArray(filteredData) ? filteredData.length : '非数组'}`)
+  return filteredData
 }
 
 async function getSnookerMatches(eventId) {
@@ -968,7 +1410,19 @@ async function getMatchDetail(id) {
 
     // 如果都没有找到，返回第一个赛事作为示例
     console.warn('未找到匹配赛事，返回第一个赛事作为示例')
-    return fallbackData[0]
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（内置降级数据） =====`)
+    console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
+    console.log(`数据来源: hardcoded_fallback, 数据数量: ${fallbackData.length}`)
+    return {
+      data: fallbackData,
+      source: 'hardcoded_fallback',
+      isFallback: true,
+      count: fallbackData.length,
+      lastUpdate: new Date().toISOString(),
+      season: currentSeason
+    }[0]
 
   } catch (error) {
     console.error('获取比赛详情失败:', error)
@@ -2178,7 +2632,8 @@ function generateRealtimeSchedule(matchId, date) {
  * 云函数入口函数
  */
 exports.main = async (event, context) => {
-  console.log('云函数收到请求:', JSON.stringify(event))
+  const startTime = Date.now()
+  console.log(`[${new Date().toISOString()}] 云函数收到请求:`, JSON.stringify(event))
   console.log('云函数上下文:', JSON.stringify(context))
 
   const { action, id, matchId, date, tour = 'all', force = false } = event
@@ -2207,55 +2662,26 @@ exports.main = async (event, context) => {
         const currentSeason = getCurrentSeason()
         
         if (force) {
-          // 强制更新：直接调用外部API
-          console.log('强制更新：忽略数据库检查，直接调用外部API')
-          const updateResult = await updateMatchListFromExternal(tour)
-          
-          // 处理新的返回格式：可能是对象或数组
-          if (updateResult && typeof updateResult === 'object' && updateResult.data) {
-            // 新格式：对象包含 data 属性
-            result = {
-              ...updateResult,
-              forceUpdate: true,
-              updated: true
-            }
-          } else if (Array.isArray(updateResult)) {
-            // 旧格式：直接返回数组
-            result = {
-              data: updateResult,
-              source: 'snooker.org',
-              isFallback: false,
-              forceUpdate: true,
-              updated: true,
-              count: updateResult.length
-            }
-          } else {
-            result = updateResult || {
-              message: '更新操作完成',
-              updated: true,
-              forceUpdate: true
-            }
-          }
-        } else {
-          // 普通更新：检查是否需要更新
-          const needUpdate = await shouldUpdateFromDB(currentSeason)
-          if (needUpdate) {
-            console.log('数据库需要更新，开始从外部API同步')
+          // 强制更新：尝试调用外部API
+          console.log('强制更新：尝试从外部API获取最新数据')
+          try {
             const updateResult = await updateMatchListFromExternal(tour)
             
-            // 处理新的返回格式
+            // 处理新的返回格式：可能是对象或数组
             if (updateResult && typeof updateResult === 'object' && updateResult.data) {
+              // 新格式：对象包含 data 属性
               result = {
                 ...updateResult,
-                forceUpdate: false,
+                forceUpdate: true,
                 updated: true
               }
             } else if (Array.isArray(updateResult)) {
+              // 旧格式：直接返回数组
               result = {
                 data: updateResult,
                 source: 'snooker.org',
                 isFallback: false,
-                forceUpdate: false,
+                forceUpdate: true,
                 updated: true,
                 count: updateResult.length
               }
@@ -2263,15 +2689,120 @@ exports.main = async (event, context) => {
               result = updateResult || {
                 message: '更新操作完成',
                 updated: true,
-                forceUpdate: false
+                forceUpdate: true
+              }
+            }
+            console.log('✅ 强制更新成功，数据来源:', result.source)
+          } catch (forceUpdateError) {
+            // 外部API失败，回退到数据库数据
+            console.warn('⚠️ 强制更新失败（外部API超时），使用数据库缓存数据')
+            console.warn('错误信息:', forceUpdateError.message)
+            
+            // 从数据库获取数据
+            const dbMatches = await getMatchListFromDB(currentSeason, tour)
+            const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+            
+            if (dbMatches && dbMatches.length > 0) {
+              result = {
+                data: dbMatches,
+                source: 'database_cache',
+                isFallback: false,
+                forceUpdate: true,
+                updated: false,
+                count: dbMatches.length,
+                lastUpdate: dbLastUpdate || new Date().toISOString(),
+                season: currentSeason,
+                message: '外部API超时，返回缓存数据'
+              }
+              console.log('✅ 已返回数据库缓存数据，数量:', dbMatches.length)
+            } else {
+              // 数据库也没有数据，返回错误（包含最后更新时间为当前时间）
+              result = {
+                message: '外部API超时且数据库无数据',
+                updated: false,
+                forceUpdate: true,
+                error: forceUpdateError.message,
+                lastUpdate: new Date().toISOString(),  // 确保有最后更新时间
+                season: currentSeason
+              }
+              console.error('❌ 外部API超时且数据库无数据')
+            }
+          }
+        } else {
+          // 普通更新：检查是否需要更新
+          const needUpdate = await shouldUpdateFromDB(currentSeason)
+          if (needUpdate) {
+            console.log('数据库需要更新，尝试从外部API同步')
+            try {
+              const updateResult = await updateMatchListFromExternal(tour)
+              
+              // 处理新的返回格式
+              if (updateResult && typeof updateResult === 'object' && updateResult.data) {
+                result = {
+                  ...updateResult,
+                  forceUpdate: false,
+                  updated: true
+                }
+              } else if (Array.isArray(updateResult)) {
+                result = {
+                  data: updateResult,
+                  source: 'snooker.org',
+                  isFallback: false,
+                  forceUpdate: false,
+                  updated: true,
+                  count: updateResult.length
+                }
+              } else {
+                result = updateResult || {
+                  message: '更新操作完成',
+                  updated: true,
+                  forceUpdate: false
+                }
+              }
+              console.log('✅ 外部API更新成功，数据来源:', result.source)
+            } catch (updateError) {
+              // 外部API失败，回退到数据库数据
+              console.warn('⚠️ 外部API更新失败，使用数据库缓存数据')
+              console.warn('错误信息:', updateError.message)
+              
+              const dbMatches = await getMatchListFromDB(currentSeason, tour)
+              const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+              
+              if (dbMatches && dbMatches.length > 0) {
+                result = {
+                  data: dbMatches,
+                  source: 'database_cache',
+                  isFallback: false,
+                  forceUpdate: false,
+                  updated: false,
+                  count: dbMatches.length,
+                  lastUpdate: dbLastUpdate || new Date().toISOString(),
+                  season: currentSeason,
+                  message: '外部API超时，返回缓存数据'
+                }
+                console.log('✅ 已返回数据库缓存数据，数量:', dbMatches.length)
+              } else {
+                // 数据库也没有数据，返回错误（包含最后更新时间为当前时间）
+                result = {
+                  message: '外部API超时且数据库无数据',
+                  updated: false,
+                  forceUpdate: false,
+                  error: updateError.message,
+                  lastUpdate: new Date().toISOString(),  // 确保有最后更新时间
+                  season: currentSeason
+                }
+                console.error('❌ 外部API超时且数据库无数据')
               }
             }
           } else {
-            console.log('数据库数据新鲜，无需更新')
+            console.log('✅ 数据库数据新鲜，无需更新')
+            // 获取数据库的最后更新时间
+            const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
             result = {
               message: '数据库数据新鲜，无需更新',
               updated: false,
-              season: currentSeason
+              season: currentSeason,
+              lastUpdate: dbLastUpdate || new Date().toISOString()  // 确保有最后更新时间
             }
           }
         }
@@ -2281,14 +2812,18 @@ exports.main = async (event, context) => {
         throw new Error('Invalid action: ' + action)
     }
 
-    console.log('云函数执行成功，返回数据')
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.log(`[${new Date().toISOString()}] 云函数执行成功，总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
 
     return {
       success: true,
       data: result
     }
   } catch (error) {
-    console.error('云函数执行错误:', error)
+    const endTime = Date.now()
+    const totalTime = endTime - startTime
+    console.error(`[${new Date().toISOString()}] 云函数执行错误，总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒):`, error)
     console.error('错误堆栈:', error.stack)
 
     return {
