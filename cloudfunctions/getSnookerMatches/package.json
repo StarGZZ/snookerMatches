@@ -4,6 +4,7 @@
   "description": "获取斯诺克赛事数据的云函数",
   "main": "index.js",
   "dependencies": {
+    "axios": "^1.13.6",
     "request": "^2.88.2",
     "request-promise-native": "^1.0.9",
     "wx-server-sdk": "~2.6.3"

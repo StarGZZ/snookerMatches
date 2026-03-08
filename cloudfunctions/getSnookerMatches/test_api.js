@@ -1,10 +1,10 @@
-// test_api.js - snooker.org 官方API测试脚本
-const request = require('request-promise-native')
+// test_api.js - snooker.org 官方API测试脚本 (使用 Axios)
+const axios = require('axios')
 
 const API_KEY = 'StarWeChat261'
 const BASE_URL = 'https://api.snooker.org'
 
-// 通用请求函数（复用云函数中的逻辑）
+// 通用请求函数（复用云函数中的逻辑，改用 Axios）
 async function fetchOfficialAPI(endpoint, params = {}) {
   let url = BASE_URL
   
@@ -28,16 +28,22 @@ async function fetchOfficialAPI(endpoint, params = {}) {
     throw new Error('不支持的端点: ' + endpoint)
   }
   
+  // 强制使用 IPv4 避免 Node 在尝试 IPv6 时等待超时
+  const https = require('https')
+  const agent = new https.Agent({ family: 4 })
+
   const options = {
-    uri: url,
-    json: true,
+    method: 'GET',
+    url: url,
     headers: {
       'User-Agent': 'SnookerScheduleMiniProgram/1.0',
       'Accept': 'application/json',
       'X-Requested-By': API_KEY
     },
-    timeout: 10000,
-    resolveWithFullResponse: true
+    // 赛事接口可能较慢，延长超时并指定代理
+    timeout: 20000,
+    httpsAgent: agent,
+    // Axios 默认会解析 JSON，不需要额外配置
   }
   
   console.log('🚀 测试请求:', url)
@@ -45,22 +51,22 @@ async function fetchOfficialAPI(endpoint, params = {}) {
   
   const startTime = Date.now()
   try {
-    const response = await request(options)
+    const response = await axios(options)
     const endTime = Date.now()
-    
+
     console.log('✅ 请求成功!')
     console.log('⏱️  响应时间:', endTime - startTime, 'ms')
-    console.log('📊 状态码:', response.statusCode)
-    console.log('📦 数据长度:', Array.isArray(response.body) ? response.body.length : '非数组')
+    console.log('📊 状态码:', response.status)
+    console.log('📦 数据长度:', Array.isArray(response.data) ? response.data.length : '非数组')
     
     // 显示部分数据样本
-    if (Array.isArray(response.body) && response.body.length > 0) {
+    if (Array.isArray(response.data) && response.data.length > 0) {
       console.log('📋 第一项数据样本:')
-      console.log(JSON.stringify(response.body[0], null, 2))
+      console.log(JSON.stringify(response.data[0], null, 2))
       
       // 显示字段结构
       console.log('🔍 字段结构:')
-      const sample = response.body[0]
+      const sample = response.data[0]
       Object.keys(sample).forEach(key => {
         console.log(`  - ${key}: ${typeof sample[key]} (示例: ${JSON.stringify(sample[key]).substring(0, 50)}...)`)
       })
@@ -68,23 +74,34 @@ async function fetchOfficialAPI(endpoint, params = {}) {
     
     return {
       success: true,
-      data: response.body,
+      data: response.data,
       responseTime: endTime - startTime,
-      count: Array.isArray(response.body) ? response.body.length : 1
+      count: Array.isArray(response.data) ? response.data.length : 1
     }
     
   } catch (error) {
     const endTime = Date.now()
     console.error('❌ 请求失败!')
     console.error('⏱️  失败时间:', endTime - startTime, 'ms')
-    console.error('📛 错误信息:', error.message)
-    console.error('🔢 状态码:', error.statusCode || '无')
+    
+    // Axios 错误处理
+    if (error.response) {
+      // 服务器返回了响应但状态码不在 2xx
+      console.error('📛 状态码:', error.response.status)
+      console.error('📄 响应数据:', error.response.data)
+    } else if (error.request) {
+      // 无响应
+      console.error('📛 错误信息: 无响应 -', error.message)
+    } else {
+      // 其它错误
+      console.error('📛 错误信息:', error.message)
+    }
     console.error('🔗 请求URL:', url)
     
     return {
       success: false,
       error: error.message,
-      statusCode: error.statusCode,
+      statusCode: error.response ? error.response.status : undefined,
       responseTime: endTime - startTime
     }
   }
@@ -93,7 +110,7 @@ async function fetchOfficialAPI(endpoint, params = {}) {
 // 运行所有测试
 async function runAllTests() {
   console.log('='.repeat(60))
-  console.log('🎯 snooker.org 官方API测试开始')
+  console.log('🎯 snooker.org 官方API测试开始 (Axios版)')
   console.log('='.repeat(60))
   console.log(`API Key: ${API_KEY}`)
   console.log(`Base URL: ${BASE_URL}`)
@@ -173,6 +190,7 @@ async function runAllTests() {
     console.log('   1. 网络连接是否可以访问 api.snooker.org')
     console.log('   2. API Key (X-Requested-By头) 是否正确')
     console.log('   3. 官方API服务是否正常')
+    console.log('   4. 考虑使用演示数据模式')
   }
 }
 

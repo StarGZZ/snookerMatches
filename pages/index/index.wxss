@@ -17,6 +17,14 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
+.source-hint {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 20rpx;
+  margin-left: 10rpx;
+}
+
+
+
 /* 选项卡样式 */
 .tab-container {
   display: flex;

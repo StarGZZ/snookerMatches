@@ -320,7 +320,7 @@ async function updateMatchListFromExternal(tourType = 'all') {
     // 调用现有的外部API逻辑，跳过缓存强制获取最新数据
     const externalData = await withTimeout(
       getSnookerEvents(currentSeason, tourType, true),  // skipCache = true
-      10000, // 增加到10秒，确保外部API有充足响应时间
+      20000, // 增加到20秒，确保外部API有充足响应时间
       'snooker.org API请求超时'
     )
     
@@ -333,18 +333,23 @@ async function updateMatchListFromExternal(tourType = 'all') {
       await saveMatchListToDB(formatted, currentSeason)
       console.log(`数据库更新完成，保存 ${formatted.length} 条记录`)
       
+      // 获取数据库中的实际最后更新时间，而不是使用当前时间
+      const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+      const apiUpdateTime = dbLastUpdate || new Date().toISOString()
+      
       const endTime = Date.now()
       const totalTime = endTime - startTime
       console.log(`\n[${new Date().toISOString()}] ===== updateMatchListFromExternal 成功完成 =====`)
       console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
       console.log(`数据来源: snooker.org, 数据数量: ${formatted.length}`)
+      console.log(`最后更新时间: ${apiUpdateTime}`)
       
       return {
         data: formatted,
         source: 'snooker.org',
         isFallback: false,
         count: formatted.length,
-        lastUpdate: new Date().toISOString(),
+        lastUpdate: apiUpdateTime,
         season: currentSeason
       }
     } else {
@@ -474,7 +479,7 @@ async function fetchData(url, options = {}) {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json'
       },
-      timeout: 10000, // 增加到10秒，确保外部API有充足响应时间
+      timeout: 18000, // 设置为18秒，给云函数留2秒缓冲时间
       jar: false, // 禁用 cookie jar，防止自动添加 Referer
       followAllRedirects: true, // 跟随所有重定向
       followOriginalHttpMethod: true, // 保持原始 HTTP 方法
@@ -684,79 +689,18 @@ async function getMatchList(tourType = 'all') {
           season: currentSeason
         }
       } else {
-        console.warn('外部API更新返回空数据，尝试使用数据库中的降级数据')
-        // 如果数据库有数据（即使是旧的），返回数据库数据
-        if (dbMatches && dbMatches.length > 0) {
-          console.log(`返回数据库中的 ${dbMatches.length} 条降级数据`)
-          // 获取数据库中的实际最后更新时间
-          const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
-          const endTime = Date.now()
-          const totalTime = endTime - startTime
-          console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（数据库降级） =====`)
-          console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
-          console.log(`数据来源: database_cache（外部API返回空数据）, 数据数量: ${dbMatches.length}`)
-          return {
-            data: dbMatches,
-            source: 'database_cache',
-            isFallback: false,
-            count: dbMatches.length,
-            lastUpdate: dbLastUpdate || new Date().toISOString(),
-            season: currentSeason
-          }
-        }
-        // 否则继续使用内置降级数据
+        console.warn('外部API更新返回空数据')
+        // 外部API返回空数据，抛出错误而不是使用缓存
+        throw new Error('外部API返回空数据')
       }
     } catch (updateError) {
       console.warn('外部API更新失败:', updateError.message)
       console.log('数据库数据状态:', dbMatches ? '有数据，数量:' + dbMatches.length : '无数据')
-      // 如果数据库有数据（即使是旧的），返回数据库数据
-      if (dbMatches && dbMatches.length > 0) {
-        console.log(`外部API失败，返回数据库中的 ${dbMatches.length} 条降级数据`)
-        // 获取数据库中的实际最后更新时间
-        const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
-        const endTime = Date.now()
-        const totalTime = endTime - startTime
-        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（外部API失败，数据库降级） =====`)
-        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
-        console.log(`数据来源: database_cache（外部API失败）, 数据数量: ${dbMatches.length}`)
-        return {
-          data: dbMatches,
-          source: 'database_cache',
-          isFallback: false,
-          count: dbMatches.length,
-          lastUpdate: dbLastUpdate || new Date().toISOString(),
-          season: currentSeason
-        }
-      } else {
-        // 数据库无数据，直接返回内置降级数据
-        console.log('数据库无数据，直接返回内置降级数据')
-        const fallbackData = tourType === 'all' 
-          ? getAllSeasonFallback(currentSeason)
-          : getCurrentSeasonFallback(currentSeason)
-        console.log(`内置降级数据加载完成，数量: ${fallbackData.length}`)
-        
-        // 尝试将降级数据保存到数据库以备下次使用
-        try {
-          await saveMatchListToDB(fallbackData, currentSeason)
-          console.log(`降级数据已保存到数据库，保存 ${fallbackData.length} 条记录`)
-        } catch (saveError) {
-          console.error('保存降级数据到数据库失败:', saveError.message)
-        }
-        
-        const endTime = Date.now()
-        const totalTime = endTime - startTime
-        console.log(`[${new Date().toISOString()}] ===== getMatchList 完成（内置降级数据） =====`)
-        console.log(`总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
-        console.log(`数据来源: hardcoded_fallback, 数据数量: ${fallbackData.length}`)
-        return {
-          data: fallbackData,
-          source: 'hardcoded_fallback',
-          isFallback: true,
-          count: fallbackData.length,
-          lastUpdate: new Date().toISOString(),
-          season: currentSeason
-        }
-      }
+      
+      // 关键修改：API失败时不要返回缓存数据，直接抛出错误
+      // 这样前端就能知道更新失败了，而不是显示错误的更新时间
+      console.error('❌ 强制刷新失败：外部API无法获取新数据，且不允许使用缓存数据')
+      throw new Error(`强制刷新失败：${updateError.message}。请稍后重试。`)
     }
     
     // 3. 如果所有方法都失败，使用内置降级数据
@@ -967,11 +911,11 @@ async function fetchFromSnookerOrg(endpoint, params = {}) {
   console.log('=========================================')
   
   try {
-    console.log('正在发送请求到 snooker.org（0次重试，只尝试1次）...')
+    console.log('正在发送请求到 snooker.org（2次重试，总共尝试3次）...')
     const response = await retryRequest(
       () => fetchData(url, options),
-      0,  // 0次重试，只尝试1次，避免超时
-      500  // 500ms间隔（基本用不到）
+      2,  // 2次重试，总共尝试3次，提高成功率
+      2000  // 2秒间隔
     )
     
     console.log('========== snooker.org API 响应 ==========')
@@ -2694,39 +2638,12 @@ exports.main = async (event, context) => {
             }
             console.log('✅ 强制更新成功，数据来源:', result.source)
           } catch (forceUpdateError) {
-            // 外部API失败，回退到数据库数据
-            console.warn('⚠️ 强制更新失败（外部API超时），使用数据库缓存数据')
-            console.warn('错误信息:', forceUpdateError.message)
+            // 关键修改：强制更新时API失败，不要返回缓存数据，直接抛出错误
+            console.error('❌ 强制更新失败：外部API无法获取新数据')
+            console.error('错误信息:', forceUpdateError.message)
             
-            // 从数据库获取数据
-            const dbMatches = await getMatchListFromDB(currentSeason, tour)
-            const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
-            
-            if (dbMatches && dbMatches.length > 0) {
-              result = {
-                data: dbMatches,
-                source: 'database_cache',
-                isFallback: false,
-                forceUpdate: true,
-                updated: false,
-                count: dbMatches.length,
-                lastUpdate: dbLastUpdate || new Date().toISOString(),
-                season: currentSeason,
-                message: '外部API超时，返回缓存数据'
-              }
-              console.log('✅ 已返回数据库缓存数据，数量:', dbMatches.length)
-            } else {
-              // 数据库也没有数据，返回错误（包含最后更新时间为当前时间）
-              result = {
-                message: '外部API超时且数据库无数据',
-                updated: false,
-                forceUpdate: true,
-                error: forceUpdateError.message,
-                lastUpdate: new Date().toISOString(),  // 确保有最后更新时间
-                season: currentSeason
-              }
-              console.error('❌ 外部API超时且数据库无数据')
-            }
+            // 抛出错误而不是返回缓存数据
+            throw new Error(`强制刷新失败：${forceUpdateError.message}。请稍后重试。`)
           }
         } else {
           // 普通更新：检查是否需要更新

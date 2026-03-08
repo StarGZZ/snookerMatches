@@ -11,16 +11,12 @@ Page({
   },
 
   onLoad() {
-    // 生产环境：简单加载比赛列表
     this.loadMatchList()
   },
 
   onShow() {
-    // 页面显示时检查是否需要更新数据（超过5分钟自动刷新）
     const now = Date.now()
     const lastTime = new Date(this.data.lastUpdateTime).getTime()
-
-    // 如果没有上次更新时间，或者超过5分钟，则刷新
     if (!lastTime || (now - lastTime > 5 * 60 * 1000)) {
       this.loadMatchList()
     }
@@ -40,6 +36,11 @@ Page({
 
   // 加载比赛列表
   loadMatchList() {
+    // 先重置数据源，避免旧缓存影响
+    this.setData({
+      dataSource: 'snooker.org'  // 默认值
+    })
+    
     // 先尝试从缓存加载数据，提升用户体验
     const cachedList = wx.getStorageSync('matchList')
     const cachedTime = wx.getStorageSync('lastUpdateTime')
@@ -49,30 +50,31 @@ Page({
     if (cachedList && cachedList.length > 0) {
       // 缓存有效性检查：确保缓存数据是数组且有一定数量（至少2个比赛）
       validCache = Array.isArray(cachedList) && cachedList.length >= 2
-      console.log('缓存有效性检查:', {
-        缓存数据量: cachedList.length,
-        缓存有效: validCache,
-        要求最少数量: 2
-      })
+
     }
 
     if (validCache) {
+      // 格式化缓存时间
+      const formattedCacheTime = this.formatTime(cachedTime || new Date().toISOString())
+      
       this.setData({
         matchList: cachedList,
-        lastUpdateTime: cachedTime || new Date().toISOString(),
+        lastUpdateTime: formattedCacheTime,
         loading: false,
-        dataSource: 'database_cache'  // 明确标记数据来源为数据库缓存
+        dataSource: 'local_cache'  // 标记为本地缓存
       })
-      console.log('使用有效缓存数据，最后更新时间:', cachedTime)
+
     } else {
       // 缓存无效，清除缓存
       if (cachedList && cachedList.length > 0) {
-        console.log('清除无效缓存数据')
+
         wx.removeStorageSync('matchList')
         wx.removeStorageSync('lastUpdateTime')
       }
       this.setData({ loading: true })
     }
+
+
 
     // 加载真实数据
     this.loadRealMatchList(cachedList, cachedTime, validCache, this.data.activeTab)
@@ -80,26 +82,15 @@ Page({
 
   // 加载真实数据
   loadRealMatchList(cachedList, cachedTime, hasCache, tour = 'all') {
-    console.log('开始加载真实数据，赛事类型:', tour)
-    console.log('缓存数据状态:', {
-      有缓存数据: !!cachedList,
-      缓存数据量: cachedList ? cachedList.length : 0,
-      缓存有效: hasCache,
-      缓存时间: cachedTime
-    })
+
     
     getMatchList(tour)
       .then(result => {
-        console.log('收到云函数数据，完整结果:', result)
-        console.log('数据来源:', result.source, '数量:', result.count, '最后更新时间:', result.lastUpdate)
-        console.log('数据是否为数组:', Array.isArray(result.data), '数据长度:', result.data ? result.data.length : 0)
+
         
         const matchArray = result.data || []
-        console.log('提取的比赛数组长度:', matchArray.length)
         
         if (matchArray.length === 0) {
-          console.warn('警告: 云函数返回空数据数组')
-          console.warn('完整结果结构:', JSON.stringify(result, null, 2))
         }
         
         const formattedList = this.formatMatchList(matchArray)
@@ -129,30 +120,21 @@ Page({
         const sortedList = formattedList.sort((a, b) => {
           return getSeasonOrder(a.startDate) - getSeasonOrder(b.startDate)
         })
-        // 调试：输出每个比赛的赛季顺序值
-        console.log('排序后的数据（包含赛季顺序值）:', sortedList.map(item => ({
-          name: item.name,
-          startDate: item.startDate,
-          seasonOrder: getSeasonOrder(item.startDate)
-        })))
-        console.log('排序后的数据:', sortedList)
-        console.log('排序后的数据长度:', sortedList.length)
-        console.log('数据来源:', result.source)
-        console.log('最后更新时间:', result.lastUpdate)
 
+
+        
         if (sortedList.length === 0) {
-          console.warn('云函数返回的数据为空，尝试使用其他数据源')
-          console.warn('原始数据数组长度:', matchArray.length)
-          console.warn('格式化后数据长度:', formattedList.length)
-          console.warn('排序后数据长度:', sortedList.length)
+
           // 如果云函数返回空数据，但有缓存数据，使用缓存数据
           if (hasCache && cachedList && cachedList.length > 0) {
-            console.log('使用缓存数据替代空数据，缓存数据长度:', cachedList.length)
+
+            const formattedCacheTime = this.formatTime(cachedTime || new Date().toISOString())
+            
             this.setData({
               matchList: cachedList,
               loading: false,
-              lastUpdateTime: cachedTime || new Date().toISOString(),
-              dataSource: 'database_cache'
+              lastUpdateTime: formattedCacheTime,
+              dataSource: 'local_cache'
             })
             wx.showToast({
               title: '使用缓存数据',
@@ -163,24 +145,34 @@ Page({
           }
           
           // 如果没有缓存数据，使用模拟数据
-          console.log('没有缓存数据，使用模拟数据')
+
           this.loadMockMatchList()
           return
         }
 
-        console.log('设置页面数据，数据源:', result.source, '最后更新时间:', result.lastUpdate)
+
         const lastUpdateTime = result.lastUpdate || new Date().toISOString()
-        console.log('使用的最后更新时间:', lastUpdateTime)
+
+        
+        // 格式化时间
+        const formattedTime = this.formatTime(lastUpdateTime)
+
+        
         this.setData({
           matchList: sortedList,
           loading: false,
-          lastUpdateTime: lastUpdateTime,
+          lastUpdateTime: formattedTime,  // 直接使用格式化后的字符串
           dataSource: result.source || 'snooker.org'
         })
+        
 
+        
         // 缓存数据到本地
         wx.setStorageSync('matchList', sortedList)
-        wx.setStorageSync('lastUpdateTime', result.lastUpdate || new Date().toISOString())
+        // 使用云函数返回的实际更新时间，不要覆盖为当前时间
+        wx.setStorageSync('lastUpdateTime', result.lastUpdate)
+        
+
 
         wx.showToast({
           title: '数据已更新',
@@ -189,17 +181,19 @@ Page({
         })
       })
       .catch(err => {
-        console.error('加载真实数据失败:', err)
         const errorMsg = err.message || err.errMsg || '未知错误'
-        console.error('详细错误信息:', errorMsg)
 
         // 如果之前加载过缓存数据，就保持显示
         if (hasCache) {
           // 确保缓存数据仍然显示
+          // 优先使用云函数返回的时间，其次使用缓存时间
+          const updateTime = result.lastUpdate || cachedTime || new Date().toISOString()
+          const formattedCacheTime = this.formatTime(updateTime)
+          
           this.setData({
             loading: false,
-            lastUpdateTime: cachedTime || new Date().toISOString(),
-            dataSource: 'database_cache'  // 明确标记数据来源为数据库缓存
+            lastUpdateTime: formattedCacheTime,
+            dataSource: 'local_cache'  // 标记为本地缓存
             // matchList 已经在 loadMatchList 中设置，这里不需要重复设置
           })
           wx.showToast({
@@ -209,9 +203,13 @@ Page({
           })
         } else {
           // 没有缓存数据，显示详细错误提示
+          // 使用云函数返回的时间（如果有），否则使用当前时间
+          const updateTime = result.lastUpdate || new Date().toISOString()
+          const formattedTime = this.formatTime(updateTime)
+          
           this.setData({
             loading: false,
-            lastUpdateTime: new Date().toISOString(),
+            lastUpdateTime: formattedTime,
             dataSource: 'error_fallback'  // 标记为错误回退
           })
           wx.showToast({
@@ -221,7 +219,7 @@ Page({
           })
           
           // 如果既没有缓存数据，也没有API数据，尝试使用模拟数据
-          console.log('尝试加载模拟数据作为最后备选方案')
+
           this.loadMockMatchList()
         }
       })
@@ -229,19 +227,21 @@ Page({
 
   // 加载模拟数据（作为后备方案）
   loadMockMatchList() {
-    console.log('开始加载模拟数据...')
+
     const matchList = this.getMockMatchList()
-    console.log('模拟数据加载完成，matchList:', matchList)
+
     // 数据已在 getMockMatchList 中排序
-    const lastUpdateTime = new Date().toISOString()
-    console.log('模拟数据最后更新时间:', lastUpdateTime)
+    // 使用固定的演示数据时间，避免每次都显示当前时间
+    const demoTime = new Date('2026-03-08T14:49:52.000Z').toISOString()
+    const formattedTime = this.formatTime(demoTime)
+
     this.setData({
       matchList: matchList,
       loading: false,
-      lastUpdateTime: lastUpdateTime,
+      lastUpdateTime: formattedTime,
       dataSource: 'mock_data'  // 标记为模拟数据
     })
-    console.log('页面数据已设置，dataSource: mock_data, lastUpdateTime:', lastUpdateTime)
+
     wx.showToast({
       title: '使用演示数据',
       icon: 'none'
@@ -265,7 +265,7 @@ Page({
       success: (res) => {
         if (res.confirm) {
           wx.showLoading({ title: '强制刷新中...' })
-          console.log('开始强制刷新数据...')
+
           
           // 清除本地缓存，确保获取最新数据
           wx.removeStorageSync('matchList')
@@ -281,20 +281,21 @@ Page({
             }
           }).then(res => {
             wx.hideLoading()
-            console.log('强制更新结果:', res)
+
             if (res.result && res.result.success) {
-              console.log('✅ 强制更新成功！')
+
               const updateResult = res.result.data
-              console.log('更新数据:', updateResult)
+
 
               // 检查是否有实际的数据
               if (updateResult && updateResult.data && Array.isArray(updateResult.data)) {
                 // 有比赛数据，使用这个数据
                 const formattedList = this.formatMatchList(updateResult.data)
+                const formattedTime = this.formatTime(updateResult.lastUpdate || new Date().toISOString())
                 this.setData({
                   matchList: formattedList,
                   loading: false,
-                  lastUpdateTime: updateResult.lastUpdate || new Date().toISOString(),
+                  lastUpdateTime: formattedTime,
                   dataSource: updateResult.source || 'snooker.org'
                 })
                 // 缓存数据
@@ -307,7 +308,7 @@ Page({
                 })
               } else {
                 // 没有比赛数据，重新加载列表
-                console.log('强制更新返回无比赛数据，重新加载列表')
+
                 this.loadMatchList()
               }
             } else {
@@ -317,9 +318,9 @@ Page({
                 duration: 2000
               })
             }
-          }).catch(err => {
+          }).catch(() => {
             wx.hideLoading()
-            console.error('强制更新失败:', err)
+
             wx.showToast({
               title: '强制更新失败',
               icon: 'none',
@@ -331,62 +332,9 @@ Page({
     })
   },
 
-  // 强制初始化数据库（手动触发）
-  forceInitializeDatabase() {
-    wx.showLoading({ title: '初始化中...' })
-    console.log('手动触发数据库初始化...')
-    wx.cloud.callFunction({
-      name: 'getSnookerMatches',
-      data: { 
-        action: 'update',
-        tour: 'all',
-        force: true
-      }
-    }).then(res => {
-      wx.hideLoading()
-      console.log('手动更新结果:', res)
-      if (res.result && res.result.success) {
-        console.log('✅ 数据库初始化成功！')
-        wx.setStorageSync('databaseInitialized', true)
-        wx.showToast({
-          title: '数据库初始化成功',
-          icon: 'success',
-          duration: 2000
-        })
-        // 初始化成功后刷新页面数据
-        this.loadMatchList()
-      } else {
-        wx.showToast({
-          title: '初始化失败',
-          icon: 'none',
-          duration: 2000
-        })
-      }
-    }).catch(err => {
-      wx.hideLoading()
-      console.error('初始化失败:', err)
-      wx.showToast({
-        title: '初始化失败',
-        icon: 'none',
-        duration: 2000
-      })
-    })
-  },
+
   
-  // 测试数据库查询性能
-  testDatabasePerformance() {
-    console.log('=== 开始数据库查询性能测试 ===')
-    console.time('数据库查询')
-    wx.cloud.callFunction({
-      name: 'getSnookerMatches',
-      data: { action: 'list', tour: 'all' }
-    }).then(res => {
-      console.timeEnd('数据库查询') // 预期：< 200ms
-      console.log('二次查询数据:', res.result.data.length)
-    }).catch(err => {
-      console.error('性能测试失败:', err)
-    })
-  },
+
   
   // 跳转到详情页
   goDetail(e) {
@@ -412,15 +360,15 @@ Page({
 
   // 格式化比赛列表数据
   formatMatchList(data) {
-    console.log('开始格式化数据，原始数据:', data)
+
     // 根据实际API返回的数据结构进行格式化
     if (Array.isArray(data)) {
-      console.log('数据数量:', data.length)
+
       
       // 日期格式化函数，确保YYYY-MM-DD格式且月份日期补零
       const formatDateStr = (dateStr) => {
         if (!dateStr) {
-          console.log('日期字符串为空，返回空字符串')
+
           return ''
         }
         // 如果已经是YYYY-MM-DD格式，检查是否需要补零
@@ -441,14 +389,14 @@ Page({
             return `${year}-${month}-${day}`
           }
         } catch (error) {
-          console.error('日期解析失败:', error, dateStr)
+
         }
-        console.log('无法解析日期字符串:', dateStr)
+
         return dateStr
       }
       
-      const formatted = data.map((item, index) => {
-        console.log(`处理第${index}项:`, item)
+      const formatted = data.map((item) => {
+
         const formattedItem = {
           id: item.id || item._id,
           name: item.name || item.tournament_name,
@@ -458,13 +406,13 @@ Page({
           status: this.determineStatus(item.status || item.state),
           statusText: this.getStatusText(item.status || item.state)
         }
-        console.log(`格式化后第${index}项:`, formattedItem)
+
         return formattedItem
       })
-      console.log('格式化完成，结果:', formatted)
+
       return formatted
     }
-    console.log('数据不是数组，返回空数组')
+
     return []
   },
 
@@ -496,22 +444,16 @@ Page({
     // 假设比赛持续7天，如果没有结束日期
     const finalEndDate = endDate ? end : new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000)
 
-    console.log('===== 状态判断 =====')
-    console.log('比赛名称:', startDate)
-    console.log('开始日期:', start, start.toISOString())
-    console.log('结束日期:', finalEndDate, finalEndDate.toISOString())
-    console.log('当前日期:', now, now.toISOString())
-    console.log('now < start:', now < start)
-    console.log('now >= start && now <= finalEndDate:', now >= start && now <= finalEndDate)
+
 
     if (now < start) {
-      console.log('结果: 即将开始')
+
       return 'upcoming'
     } else if (now >= start && now <= finalEndDate) {
-      console.log('结果: 进行中')
+
       return 'ongoing'
     } else {
-      console.log('结果: 已结束')
+
       return 'finished'
     }
   },
@@ -628,15 +570,15 @@ Page({
   // 格式化时间显示
   formatTime(isoString) {
     if (!isoString) {
-      console.log('formatTime: 输入为空字符串，返回未知时间')
       return '未知时间'
     }
+    
     try {
       const date = new Date(isoString)
       if (isNaN(date.getTime())) {
-        console.log('formatTime: 无效的日期字符串:', isoString)
         return '未知时间'
       }
+      
       // 格式化为本地日期时间，例如 "2025-03-07 15:30:22"
       const year = date.getFullYear()
       const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -646,7 +588,7 @@ Page({
       const seconds = String(date.getSeconds()).padStart(2, '0')
       return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
     } catch (error) {
-      console.error('时间格式化失败:', error, isoString)
+
       return '未知时间'
     }
   }
