@@ -2,6 +2,10 @@
 const cloud = require('wx-server-sdk')
 const axios = require('axios')
 const request = require('request-promise-native')
+const https = require('https')
+
+// 强制使用 IPv4 避免 Node 在尝试 IPv6 时等待超时（与 test_api.js 保持一致）
+const httpsAgent = new https.Agent({ family: 4 })
 
 
 cloud.init({
@@ -331,11 +335,15 @@ async function updateMatchListFromExternal(tourType = 'all', options = {}) {
       console.log('数据样本:', externalData[0])
       const formatted = formatMatchList(externalData)
 
-      await saveMatchListToDB(formatted, currentSeason)
-      console.log(`数据库更新完成，保存 ${formatted.length} 条记录`)
+      // 改为后台异步保存数据库，不阻塞返回结果
+      saveMatchListToDB(formatted, currentSeason).then(() => {
+        console.log(`数据库后台更新完成，保存 ${formatted.length} 条记录`)
+      }).catch(err => {
+        console.error('数据库后台更新失败:', err.message)
+      })
+      console.log(`数据库后台更新已启动，${formatted.length} 条记录`)
 
-      const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
-      const apiUpdateTime = dbLastUpdate || new Date().toISOString()
+      const apiUpdateTime = new Date().toISOString()
 
       const endTime = Date.now()
       const totalTime = endTime - startTime
@@ -393,8 +401,8 @@ const API_CONFIG = {
 const SNOOKER_REQUESTED_BY = 'StarWeChat261'  // 根据用户提供的脚本更新
 
 const REQUEST_BUDGET = {
-  FORCE_TIMEOUT_MS: 10000,
-  NORMAL_TIMEOUT_MS: 8000,
+  FORCE_TIMEOUT_MS: 55000,   // 统一60秒逻辑：强制刷新55秒
+  NORMAL_TIMEOUT_MS: 55000,  // 统一60秒逻辑：普通请求55秒
   RETRY_DELAY_MS: 1500
 }
 
@@ -500,7 +508,8 @@ async function fetchData(url, options = {}) {
       responseType: 'json',
       maxRedirects: 5,
       decompress: true,
-      validateStatus: status => status >= 200 && status < 300
+      validateStatus: status => status >= 200 && status < 300,
+      httpsAgent: httpsAgent  // 强制使用IPv4
     }
 
     console.log(`\n[${startTimeISO}] ===== 发起HTTP请求 =====`)
@@ -2635,6 +2644,334 @@ function generateRealtimeSchedule(matchId, date) {
   return schedule
 }
 
+// ==================== 诊断测试函数 ====================
+
+/**
+ * 测试网络连通性和DNS解析
+ */
+async function testNetworkConnectivity() {
+  const dns = require('dns').promises
+  const results = {
+    timestamp: new Date().toISOString(),
+    tests: []
+  }
+
+  // 测试 DNS 解析
+  try {
+    const dnsStart = Date.now()
+    const addresses = await dns.lookup('api.snooker.org', { family: 4 })
+    results.tests.push({
+      name: 'DNS解析 (IPv4)',
+      target: 'api.snooker.org',
+      status: 'success',
+      result: addresses,
+      duration: Date.now() - dnsStart
+    })
+  } catch (error) {
+    results.tests.push({
+      name: 'DNS解析 (IPv4)',
+      target: 'api.snooker.org',
+      status: 'failed',
+      error: error.message,
+      code: error.code
+    })
+  }
+
+  // 测试 HTTPS 连接（不下载数据）
+  try {
+    const https = require('https')
+    const connectStart = Date.now()
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.snooker.org',
+        port: 443,
+        path: '/',
+        method: 'HEAD',
+        family: 4,
+        timeout: 10000
+      }, (res) => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers
+        })
+      })
+      req.on('error', reject)
+      req.on('timeout', () => {
+        req.destroy()
+        reject(new Error('连接超时'))
+      })
+      req.end()
+    })
+    results.tests.push({
+      name: 'HTTPS连接测试',
+      target: 'api.snooker.org',
+      status: 'success',
+      duration: Date.now() - connectStart
+    })
+  } catch (error) {
+    results.tests.push({
+      name: 'HTTPS连接测试',
+      target: 'api.snooker.org',
+      status: 'failed',
+      error: error.message
+    })
+  }
+
+  return results
+}
+
+/**
+ * 测试 API 响应时间（带详细计时）
+ */
+async function testApiResponseTime(timeoutMs = 18000) {
+  const startTime = Date.now()
+  const currentSeason = getCurrentSeason()
+
+  const result = {
+    timestamp: new Date().toISOString(),
+    timeout: timeoutMs,
+    season: currentSeason,
+    stages: []
+  }
+
+  // 阶段1: 准备请求
+  const stage1Start = Date.now()
+  const url = `${API_CONFIG.SNOOKER_API}/?t=5&s=${currentSeason}`
+  const options = {
+    headers: {
+      'X-Requested-By': SNOOKER_REQUESTED_BY,
+      'Accept': 'application/json',
+      'User-Agent': 'SnookerScheduleMiniProgram/1.0'
+    },
+    timeout: timeoutMs,
+    httpsAgent: httpsAgent
+  }
+  result.stages.push({
+    name: '准备请求参数',
+    duration: Date.now() - stage1Start
+  })
+
+  // 阶段2: 发送请求
+  const stage2Start = Date.now()
+  try {
+    const response = await axios({
+      ...options,
+      url,
+      method: 'GET'
+    })
+    result.stages.push({
+      name: 'API请求',
+      duration: Date.now() - stage2Start,
+      status: 'success',
+      dataLength: Array.isArray(response.data) ? response.data.length : 0
+    })
+    result.status = 'success'
+    result.totalDuration = Date.now() - startTime
+    result.dataSample = Array.isArray(response.data) && response.data.length > 0
+      ? response.data[0]
+      : null
+  } catch (error) {
+    result.stages.push({
+      name: 'API请求',
+      duration: Date.now() - stage2Start,
+      status: 'failed',
+      error: error.message,
+      errorCode: error.code,
+      errorType: getErrorType(error)
+    })
+    result.status = 'failed'
+    result.totalDuration = Date.now() - startTime
+    result.error = error.message
+  }
+
+  return result
+}
+
+/**
+ * 测试不同超时设置（优化版：减少场景 + 并行执行）
+ * @param {Array} scenarios - 超时场景数组，默认为关键测试点
+ */
+async function testTimeoutScenarios(scenarios = [5000, 10000]) {
+  const results = {
+    timestamp: new Date().toISOString(),
+    tests: [],
+    executionMode: 'parallel'
+  }
+
+  // 限制最大测试数量，避免超时
+  const timeoutScenarios = scenarios.slice(0, 3)
+
+  console.log(`[测试] 开始并行测试 ${timeoutScenarios.length} 个超时场景...`)
+
+  // 并行执行所有测试
+  const testPromises = timeoutScenarios.map(async (timeout) => {
+    console.log(`[测试] 发起超时测试: ${timeout}ms`)
+    const startTime = Date.now()
+    const testResult = await testApiResponseTime(timeout)
+    return {
+      timeout: timeout,
+      actualDuration: Date.now() - startTime,
+      ...testResult
+    }
+  })
+
+  results.tests = await Promise.all(testPromises)
+  results.totalDuration = results.tests.reduce((sum, t) => sum + (t.actualDuration || 0), 0)
+
+  console.log(`[测试] 所有超时场景测试完成，总耗时: ${results.totalDuration}ms`)
+  return results
+}
+
+/**
+ * 测试数据库连接
+ */
+async function testDatabaseConnection() {
+  const result = {
+    timestamp: new Date().toISOString(),
+    tests: []
+  }
+
+  // 测试1: 基础连接
+  try {
+    const start = Date.now()
+    const db = cloud.database()
+    const testResult = await db.collection(DB_COLLECTION).limit(1).get()
+    result.tests.push({
+      name: '数据库连接',
+      status: 'success',
+      duration: Date.now() - start,
+      collectionExists: true
+    })
+  } catch (error) {
+    result.tests.push({
+      name: '数据库连接',
+      status: 'failed',
+      error: error.message
+    })
+  }
+
+  // 测试2: 统计数据
+  try {
+    const start = Date.now()
+    const db = cloud.database()
+    const countResult = await db.collection(DB_COLLECTION).count()
+    result.tests.push({
+      name: '数据统计',
+      status: 'success',
+      duration: Date.now() - start,
+      totalRecords: countResult.total
+    })
+  } catch (error) {
+    result.tests.push({
+      name: '数据统计',
+      status: 'failed',
+      error: error.message
+    })
+  }
+
+  // 测试3: 获取最新数据
+  try {
+    const start = Date.now()
+    const db = cloud.database()
+    const latestResult = await db.collection(DB_COLLECTION)
+      .orderBy('updated_at', 'desc')
+      .limit(1)
+      .get()
+    result.tests.push({
+      name: '获取最新记录',
+      status: 'success',
+      duration: Date.now() - start,
+      hasData: latestResult.data.length > 0,
+      lastUpdate: latestResult.data.length > 0 ? latestResult.data[0].updated_at : null
+    })
+  } catch (error) {
+    result.tests.push({
+      name: '获取最新记录',
+      status: 'failed',
+      error: error.message
+    })
+  }
+
+  return result
+}
+
+/**
+ * 完整诊断报告（优化版：支持快速模式 + 并行执行）
+ * @param {Object} options - 配置选项
+ * @param {boolean} options.fastMode - 是否使用快速模式（默认true，15秒内完成）
+ * @param {boolean} options.includeTimeoutScenarios - 是否包含超时场景测试（快速模式下默认false）
+ */
+async function generateDiagnosticReport(options = {}) {
+  const { fastMode = true, includeTimeoutScenarios = false } = options
+
+  console.log('\n========== 开始生成诊断报告 ==========')
+  console.log(`[诊断] 模式: ${fastMode ? '快速模式' : '完整模式'}`)
+  console.log(`[诊断] 包含超时场景: ${includeTimeoutScenarios ? '是' : '否'}\n`)
+
+  const report = {
+    timestamp: new Date().toISOString(),
+    mode: fastMode ? 'fast' : 'full',
+    environment: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      memoryUsage: process.memoryUsage()
+    },
+    tests: {}
+  }
+
+  const startTime = Date.now()
+
+  if (fastMode) {
+    // 快速模式：并行执行关键测试，目标10秒内完成
+    console.log('[诊断] 快速模式：并行执行关键测试...')
+
+    const [network, apiStandard, db] = await Promise.all([
+      testNetworkConnectivity(),
+      testApiResponseTime(8000),  // 减少API超时到8秒
+      testDatabaseConnection()
+    ])
+
+    report.tests.network = network
+    report.tests.apiStandard = apiStandard
+    report.tests.database = db
+  } else {
+    // 完整模式：顺序执行所有测试（仅建议在命令行或后台调用）
+    console.log('[诊断] 完整模式：顺序执行所有测试...')
+
+    console.log('[诊断] 测试网络连通性...')
+    report.tests.network = await testNetworkConnectivity()
+
+    console.log('[诊断] 测试API响应时间...')
+    report.tests.apiStandard = await testApiResponseTime(12000)  // 减少到12秒
+
+    if (includeTimeoutScenarios) {
+      console.log('[诊断] 测试不同超时设置...')
+      report.tests.timeoutScenarios = await testTimeoutScenarios([5000, 10000])
+    }
+
+    console.log('[诊断] 测试数据库连接...')
+    report.tests.database = await testDatabaseConnection()
+  }
+
+  report.executionTime = Date.now() - startTime
+
+  // 汇总
+  report.summary = {
+    networkOk: report.tests.network?.tests?.every(t => t.status === 'success'),
+    apiOk: report.tests.apiStandard?.status === 'success',
+    databaseOk: report.tests.database?.tests?.every(t => t.status === 'success'),
+    executionTime: report.executionTime,
+    fastMode: fastMode
+  }
+
+  console.log('\n========== 诊断报告生成完成 ==========')
+  console.log(`执行时间: ${report.executionTime}ms`)
+  console.log('汇总:', JSON.stringify(report.summary, null, 2))
+  console.log('=====================================\n')
+
+  return report
+}
+
 /**
  * 云函数入口函数
  */
@@ -2649,6 +2986,25 @@ exports.main = async (event, context) => {
     let result
 
     switch (action) {
+      case 'test':
+        console.log('执行: 诊断测试')
+        const testType = event.testType || 'full'
+
+        if (testType === 'network') {
+          result = await testNetworkConnectivity()
+        } else if (testType === 'api') {
+          const timeout = event.timeout || 18000
+          result = await testApiResponseTime(timeout)
+        } else if (testType === 'timeout') {
+          result = await testTimeoutScenarios()
+        } else if (testType === 'db') {
+          result = await testDatabaseConnection()
+        } else {
+          // 完整诊断（默认使用快速模式，避免超时）
+          result = await generateDiagnosticReport({ fastMode: true })
+        }
+        break
+
       case 'list':
         console.log('执行: 获取比赛列表，赛事类型:', tour, '强制更新:', force)
 
@@ -2757,14 +3113,21 @@ exports.main = async (event, context) => {
             if (fallbackResult) {
               result = fallbackResult
             } else {
-              const errorType = getErrorType(forceUpdateError)
-              const error = new Error(
-                errorType === 'timeout'
-                  ? '强制刷新超时，且暂无可用缓存数据'
-                  : `强制刷新失败：${forceUpdateError.message}`
-              )
-              error.code = errorType === 'timeout' ? 'TIMEOUT' : forceUpdateError.code
-              throw error
+              // 三级降级：外部API失败 -> DB缓存失败 -> 使用硬编码数据
+              console.warn('⚠️ 数据库无数据，使用硬编码降级数据')
+              const hardcodedData = generateHardcodedMatchList(tour)
+              result = {
+                data: hardcodedData,
+                source: 'hardcoded',
+                isFallback: true,
+                forceUpdate: true,
+                updated: false,
+                count: hardcodedData.length,
+                lastUpdate: new Date().toISOString(),
+                season: currentSeason,
+                errorType: getErrorType(forceUpdateError),
+                errorMessage: forceUpdateError.message
+              }
             }
           }
         } else {

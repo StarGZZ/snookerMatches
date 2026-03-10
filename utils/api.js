@@ -4,7 +4,7 @@
  */
 
 const cloud = wx.cloud
-const CLOUD_FN_TIMEOUT = 15000 // 给云函数降级回退留出空间，避免前端长时间等待
+const CLOUD_FN_TIMEOUT = 60000 // 统一60秒超时，与云函数配置匹配
 
 /**
  * 获取比赛列表
