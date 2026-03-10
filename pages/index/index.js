@@ -28,112 +28,110 @@ Page({
       matchList: [],
       loading: true
     })
-    this.loadMatchList()
-    setTimeout(() => {
-      wx.stopPullDownRefresh()
-    }, 1000)
+    this.loadMatchList(true) // 传递 forceUpdate=true 标记强制刷新
+  },
+
+  getCacheKeys(tour = this.data.activeTab) {
+    return {
+      listKey: `matchList_${tour}`,
+      timeKey: `lastUpdateTime_${tour}`
+    }
+  },
+
+  getCacheSnapshot(tour = this.data.activeTab) {
+    const { listKey, timeKey } = this.getCacheKeys(tour)
+    const list = wx.getStorageSync(listKey)
+    const time = wx.getStorageSync(timeKey)
+    const valid = Array.isArray(list) && list.length >= 2
+
+    if (!valid && Array.isArray(list) && list.length > 0) {
+      wx.removeStorageSync(listKey)
+      wx.removeStorageSync(timeKey)
+    }
+
+    return {
+      list,
+      time,
+      valid
+    }
+  },
+
+  getFriendlyError(err) {
+    const explicitType = err?.errorType
+    const msg = err?.message || err?.errMsg || '未知错误'
+
+    if (explicitType === 'timeout' || /timeout|超时|ECONNABORTED|TIMEOUT/i.test(msg)) {
+      return { type: 'timeout', text: '网络超时' }
+    }
+
+    if (explicitType === 'service_unavailable' || /503|504|502|ERR_CANCELED|ENOTFOUND|service unavailable|服务不可用/i.test(msg)) {
+      return { type: 'service_unavailable', text: '服务暂不可用' }
+    }
+
+    return { type: 'unknown', text: '刷新失败，请稍后重试' }
   },
 
   // 加载比赛列表
-  loadMatchList() {
-    // 先重置数据源，避免旧缓存影响
+  loadMatchList(forceUpdate = false) {
+    const tour = this.data.activeTab
+    const cache = this.getCacheSnapshot(tour)
+
     this.setData({
-      dataSource: 'snooker.org'  // 默认值
+      dataSource: 'snooker.org'
     })
-    
-    // 先尝试从缓存加载数据，提升用户体验
-    const cachedList = wx.getStorageSync('matchList')
-    const cachedTime = wx.getStorageSync('lastUpdateTime')
-    
-    // 检查缓存数据是否有效
-    let validCache = false
-    if (cachedList && cachedList.length > 0) {
-      // 缓存有效性检查：确保缓存数据是数组且有一定数量（至少2个比赛）
-      validCache = Array.isArray(cachedList) && cachedList.length >= 2
 
-    }
-
-    if (validCache) {
-      // 格式化缓存时间
-      const formattedCacheTime = this.formatTime(cachedTime || new Date().toISOString())
-      
+    if (!forceUpdate && cache.valid) {
       this.setData({
-        matchList: cachedList,
-        lastUpdateTime: formattedCacheTime,
+        matchList: cache.list,
+        lastUpdateTime: this.formatTime(cache.time || new Date().toISOString()),
         loading: false,
-        dataSource: 'local_cache'  // 标记为本地缓存
+        dataSource: 'local_cache'
       })
-
     } else {
-      // 缓存无效，清除缓存
-      if (cachedList && cachedList.length > 0) {
-
-        wx.removeStorageSync('matchList')
-        wx.removeStorageSync('lastUpdateTime')
-      }
       this.setData({ loading: true })
     }
 
-
-
-    // 加载真实数据
-    this.loadRealMatchList(cachedList, cachedTime, validCache, this.data.activeTab)
+    return this.loadRealMatchList(cache.list, cache.time, cache.valid, tour, forceUpdate)
   },
 
   // 加载真实数据
-  loadRealMatchList(cachedList, cachedTime, hasCache, tour = 'all') {
+  loadRealMatchList(cachedList, cachedTime, hasCache, tour = 'all', forceUpdate = false) {
+    const { listKey, timeKey } = this.getCacheKeys(tour)
 
-    
-    getMatchList(tour)
+    return getMatchList(tour, forceUpdate)
       .then(result => {
-
-        
         const matchArray = result.data || []
-        
-        if (matchArray.length === 0) {
-        }
-        
         const formattedList = this.formatMatchList(matchArray)
-        
+
         // 按赛季顺序排序：斯诺克赛季从8月开始
         // 将比赛日期映射到赛季时间线：8月为赛季起点（第0个月），7月为赛季终点（第11个月）
         const getSeasonOrder = (dateStr) => {
           const date = new Date(dateStr)
           const year = date.getFullYear()
-          const month = date.getMonth() + 1  // 1-12
-          
+          const month = date.getMonth() + 1
+
           let seasonYear, seasonMonth
           if (month >= 8) {
-            // 8月-12月：属于当前赛季早期
             seasonYear = year
-            seasonMonth = month - 8  // 0-4 (8月=0, 12月=4)
+            seasonMonth = month - 8
           } else {
-            // 1月-7月：属于当前赛季后期（实际是下一日历年的部分）
             seasonYear = year - 1
-            seasonMonth = month + 4  // 5-11 (1月=5, 7月=11)
+            seasonMonth = month + 4
           }
-          
-          // 返回一个可排序的数字：赛季年份 * 100 + 赛季月份
+
           return seasonYear * 100 + seasonMonth
         }
-        
+
         const sortedList = formattedList.sort((a, b) => {
           return getSeasonOrder(a.startDate) - getSeasonOrder(b.startDate)
         })
 
-
-        
         if (sortedList.length === 0) {
-
-          // 如果云函数返回空数据，但有缓存数据，使用缓存数据
-          if (hasCache && cachedList && cachedList.length > 0) {
-
-            const formattedCacheTime = this.formatTime(cachedTime || new Date().toISOString())
-            
+          if (hasCache && Array.isArray(cachedList) && cachedList.length > 0) {
             this.setData({
               matchList: cachedList,
               loading: false,
-              lastUpdateTime: formattedCacheTime,
+              lastUpdateTime: this.formatTime(cachedTime || new Date().toISOString()),
               dataSource: 'local_cache'
             })
             wx.showToast({
@@ -143,91 +141,70 @@ Page({
             })
             return
           }
-          
-          // 如果没有缓存数据，使用模拟数据
 
           this.loadMockMatchList()
           return
         }
 
-
         const lastUpdateTime = result.lastUpdate || new Date().toISOString()
-
-        
-        // 格式化时间
         const formattedTime = this.formatTime(lastUpdateTime)
+        const dataSource = result.source || 'snooker.org'
 
-        
         this.setData({
           matchList: sortedList,
           loading: false,
-          lastUpdateTime: formattedTime,  // 直接使用格式化后的字符串
-          dataSource: result.source || 'snooker.org'
+          lastUpdateTime: formattedTime,
+          dataSource: dataSource
         })
-        
 
-        
-        // 缓存数据到本地
-        wx.setStorageSync('matchList', sortedList)
-        // 使用云函数返回的实际更新时间，不要覆盖为当前时间
-        wx.setStorageSync('lastUpdateTime', result.lastUpdate)
-        
+        if (dataSource !== 'hardcoded_fallback') {
+          wx.setStorageSync(listKey, sortedList)
+          wx.setStorageSync(timeKey, lastUpdateTime)
+        }
 
+        const toastTitle = result.isFallback
+          ? (result.message || '已显示最近有效数据')
+          : (forceUpdate ? '强制刷新成功' : '数据已更新')
 
         wx.showToast({
-          title: '数据已更新',
-          icon: 'success',
-          duration: 1500
+          title: toastTitle,
+          icon: result.isFallback ? 'none' : 'success',
+          duration: 2000
         })
       })
       .catch(err => {
-        const errorMsg = err.message || err.errMsg || '未知错误'
+        const { text } = this.getFriendlyError(err)
 
-        // 如果之前加载过缓存数据，就保持显示
-        if (hasCache) {
-          // 确保缓存数据仍然显示
-          // 优先使用云函数返回的时间，其次使用缓存时间
-          const updateTime = result.lastUpdate || cachedTime || new Date().toISOString()
-          const formattedCacheTime = this.formatTime(updateTime)
-          
+        if (hasCache && Array.isArray(cachedList) && cachedList.length > 0) {
           this.setData({
+            matchList: cachedList,
             loading: false,
-            lastUpdateTime: formattedCacheTime,
-            dataSource: 'local_cache'  // 标记为本地缓存
-            // matchList 已经在 loadMatchList 中设置，这里不需要重复设置
+            lastUpdateTime: this.formatTime(cachedTime || new Date().toISOString()),
+            dataSource: 'local_cache'
           })
           wx.showToast({
-            title: `网络异常，使用缓存数据: ${errorMsg.substring(0, 20)}`,
+            title: `${text}，已显示缓存`,
             icon: 'none',
-            duration: 3000
+            duration: 2500
           })
-        } else {
-          // 没有缓存数据，显示详细错误提示
-          // 使用云函数返回的时间（如果有），否则使用当前时间
-          const updateTime = result.lastUpdate || new Date().toISOString()
-          const formattedTime = this.formatTime(updateTime)
-          
-          this.setData({
-            loading: false,
-            lastUpdateTime: formattedTime,
-            dataSource: 'error_fallback'  // 标记为错误回退
-          })
-          wx.showToast({
-            title: errorMsg.substring(0, 50),
-            icon: 'none',
-            duration: 4000
-          })
-          
-          // 如果既没有缓存数据，也没有API数据，尝试使用模拟数据
-
-          this.loadMockMatchList()
+          return
         }
+
+        this.setData({
+          loading: false,
+          lastUpdateTime: this.formatTime(new Date().toISOString()),
+          dataSource: 'error_fallback'
+        })
+        this.loadMockMatchList(`${text}，显示演示数据`)
+      })
+      .finally(() => {
+        wx.hideLoading()
+        wx.stopPullDownRefresh()
       })
   },
 
   // 加载模拟数据（作为后备方案）
-  loadMockMatchList() {
-
+  loadMockMatchList(toastTitle = '使用演示数据') {
     const matchList = this.getMockMatchList()
 
     // 数据已在 getMockMatchList 中排序
@@ -243,7 +220,7 @@ Page({
     })
 
     wx.showToast({
-      title: '使用演示数据',
+      title: toastTitle,
       icon: 'none'
     })
   },
@@ -252,82 +229,20 @@ Page({
   refreshData() {
     wx.showLoading({ title: '刷新中...' })
     this.loadMatchList()
-    setTimeout(() => {
-      wx.hideLoading()
-    }, 600)
   },
   
   // 强制刷新数据（长按触发）
   forceRefresh() {
     wx.showModal({
       title: '强制刷新',
-      content: '强制刷新将从snooker.org API重新获取最新数据，可能会消耗更多时间。确定要强制刷新吗？',
-      success: (res) => {
-        if (res.confirm) {
-          wx.showLoading({ title: '强制刷新中...' })
-
-          
-          // 清除本地缓存，确保获取最新数据
-          wx.removeStorageSync('matchList')
-          wx.removeStorageSync('lastUpdateTime')
-          
-          // 调用云函数强制更新
-          wx.cloud.callFunction({
-            name: 'getSnookerMatches',
-            data: { 
-              action: 'update',
-              tour: this.data.activeTab,
-              force: true
-            }
-          }).then(res => {
-            wx.hideLoading()
-
-            if (res.result && res.result.success) {
-
-              const updateResult = res.result.data
-
-
-              // 检查是否有实际的数据
-              if (updateResult && updateResult.data && Array.isArray(updateResult.data)) {
-                // 有比赛数据，使用这个数据
-                const formattedList = this.formatMatchList(updateResult.data)
-                const formattedTime = this.formatTime(updateResult.lastUpdate || new Date().toISOString())
-                this.setData({
-                  matchList: formattedList,
-                  loading: false,
-                  lastUpdateTime: formattedTime,
-                  dataSource: updateResult.source || 'snooker.org'
-                })
-                // 缓存数据
-                wx.setStorageSync('matchList', formattedList)
-                wx.setStorageSync('lastUpdateTime', updateResult.lastUpdate || new Date().toISOString())
-                wx.showToast({
-                  title: '数据已更新',
-                  icon: 'success',
-                  duration: 2000
-                })
-              } else {
-                // 没有比赛数据，重新加载列表
-
-                this.loadMatchList()
-              }
-            } else {
-              wx.showToast({
-                title: '强制更新失败',
-                icon: 'none',
-                duration: 2000
-              })
-            }
-          }).catch(() => {
-            wx.hideLoading()
-
-            wx.showToast({
-              title: '强制更新失败',
-              icon: 'none',
-              duration: 2000
-            })
-          })
+      content: '将直接从 snooker.org 获取最新数据；若超时会回退到最近有效数据。确定继续吗？',
+      success: ({ confirm }) => {
+        if (!confirm) {
+          return
         }
+
+        wx.showLoading({ title: '强制刷新中...' })
+        this.loadMatchList(true)
       }
     })
   },

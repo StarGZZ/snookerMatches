@@ -4,7 +4,7 @@
  */
 
 const cloud = wx.cloud
-const CLOUD_FN_TIMEOUT = 20000 // 增加到20秒，避免云函数超时
+const CLOUD_FN_TIMEOUT = 15000 // 给云函数降级回退留出空间，避免前端长时间等待
 
 /**
  * 获取比赛列表
@@ -43,8 +43,11 @@ export function getMatchList(tour = 'all', forceUpdate = false) {
               isFallback: false,
               count: result.length,
               lastUpdate: new Date().toISOString(),
-              season: new Date().getFullYear()
+              season: new Date().getFullYear(),
+              message: '',
+              errorType: null
             })
+
           } else {
             // 其他对象格式，尝试包装
             resolve({
@@ -53,8 +56,13 @@ export function getMatchList(tour = 'all', forceUpdate = false) {
               isFallback: result.isFallback || false,
               count: result.count || (Array.isArray(result.data) ? result.data.length : 0),
               lastUpdate: result.lastUpdate || new Date().toISOString(),
-              season: result.season || new Date().getFullYear()
+              season: result.season || new Date().getFullYear(),
+              message: result.message || '',
+              errorType: result.errorType || null,
+              updated: result.updated,
+              forceUpdate: result.forceUpdate
             })
+
           }
         } else {
           // 非对象数据，包装为标准格式
@@ -64,12 +72,17 @@ export function getMatchList(tour = 'all', forceUpdate = false) {
             isFallback: false,
             count: Array.isArray(result) ? result.length : 0,
             lastUpdate: new Date().toISOString(),
-            season: new Date().getFullYear()
+            season: new Date().getFullYear(),
+            message: '',
+            errorType: null
           })
+
         }
       } else {
         console.error('云函数返回失败:', res.result)
-        reject(new Error(res.result.error || '云函数调用失败'))
+        const error = new Error(res.result.error || '云函数调用失败')
+        error.errorType = res.result.errorType || null
+        reject(error)
       }
     }).catch(err => {
       console.error('获取比赛列表失败:', err)
