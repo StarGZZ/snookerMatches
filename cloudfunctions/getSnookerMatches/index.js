@@ -2982,6 +2982,38 @@ exports.main = async (event, context) => {
 
   const { action, id, matchId, date, tour = 'all', force = false } = event
 
+  // 检测是否为定时触发器调用（后台自动刷新）
+  // 微信云函数定时触发器会在 event 中包含 Type: 'timer' 和 __trigger__: 'timer'
+  const isTimerTrigger = event.Type === 'timer' || event.__trigger__ === 'timer' || context.TRIGGER_SOURCE === 'timer'
+  console.log('定时触发器检测:', { isTimerTrigger, eventType: event.Type, trigger: event.__trigger__, contextTrigger: context.TRIGGER_SOURCE })
+  if (isTimerTrigger) {
+    console.log('🕐 定时触发器调用，执行后台自动刷新...')
+    try {
+      const currentSeason = getCurrentSeason()
+      // 先刷新主要赛事
+      console.log('后台刷新主要赛事数据...')
+      await updateMatchListFromExternal('main', { force: false })
+      // 再刷新全部赛事
+      console.log('后台刷新全部赛事数据...')
+      await updateMatchListFromExternal('all', { force: false })
+      console.log('✅ 后台自动刷新完成')
+      return {
+        success: true,
+        message: '后台自动刷新成功',
+        timestamp: new Date().toISOString(),
+        season: currentSeason
+      }
+    } catch (error) {
+      console.error('❌ 后台自动刷新失败:', error.message)
+      return {
+        success: false,
+        message: '后台自动刷新失败',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      }
+    }
+  }
+
   try {
     let result
 

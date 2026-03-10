@@ -3,5 +3,11 @@
     "openapi": []
   },
   "timeout": 60,
-  "triggers": []
+  "triggers": [
+    {
+      "name": "autoRefreshMatches",
+      "type": "timer",
+      "config": "0 */1 * * * *"
+    }
+  ]
 }
