@@ -28,7 +28,7 @@ Page({
       matchList: [],
       loading: true
     })
-    this.loadMatchList(true) // 传递 forceUpdate=true 标记强制刷新
+    this.loadMatchList(false) // 改为 false，只从数据库获取，不调用外部 API
   },
 
   getCacheKeys(tour = this.data.activeTab) {
