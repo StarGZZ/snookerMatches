@@ -1,7 +1,6 @@
 // 云函数入口文件
 const cloud = require('wx-server-sdk')
 const axios = require('axios')
-const request = require('request-promise-native')
 const https = require('https')
 
 // 强制使用 IPv4 避免 Node 在尝试 IPv6 时等待超时（与 test_api.js 保持一致）
@@ -906,15 +905,15 @@ async function fetchFromSnookerApi(season, tourType = 'all') {
         'Accept': 'application/json',
         'User-Agent': 'SnookerScheduleMiniProgram/1.0'
       },
-      timeout: 10000,
-      json: true
+      timeout: 10000
     }
     
     console.log('发送请求到 api.snooker.org...')
-    const response = await request({
-      uri: url,
+    const response = await axios({
+      url: url,
+      method: 'GET',
       ...options
-    })
+    }).then(res => res.data)
     
     console.log(`api.snooker.org API 响应成功，数据数量: ${Array.isArray(response) ? response.length : '非数组'}`)
     
@@ -2988,10 +2987,11 @@ exports.main = async (event, context) => {
   // 检测是否为定时触发器调用（后台自动刷新）
   // 方式1: 通过 event 中的字段判断
   // 方式2: 通过 wxContext.SOURCE 判断（微信官方推荐）
-  const isTimerTrigger = event.Type === 'timer' || 
-                         event.__trigger__ === 'timer' || 
-                         context.TRIGGER_SOURCE === 'timer' ||
-                         wxContext.SOURCE === 'wx_trigger'
+  const isTimerTrigger = (event.Type && event.Type.toLowerCase() === 'timer') || 
+                        (event.__trigger__ && event.__trigger__.toLowerCase() === 'timer') || 
+                        (context.TRIGGER_SRC && context.TRIGGER_SRC.toLowerCase() === 'timer') ||
+                        (context.TRIGGER_SOURCE && context.TRIGGER_SOURCE.toLowerCase() === 'timer') ||
+                        wxContext.SOURCE === 'wx_trigger'
   console.log('定时触发器检测:', { 
     isTimerTrigger, 
     eventType: event.Type, 
@@ -3001,29 +3001,55 @@ exports.main = async (event, context) => {
   })
   if (isTimerTrigger) {
     console.log('🕐 定时触发器调用，执行后台自动刷新...')
+    const currentSeason = getCurrentSeason()
+    let mainResult = null
+    let allResult = null
+    let hasError = false
+    let errorMsg = ''
+    
+    // 先刷新主要赛事
+    console.log('后台刷新主要赛事数据...')
     try {
-      const currentSeason = getCurrentSeason()
-      // 先刷新主要赛事
-      console.log('后台刷新主要赛事数据...')
-      await updateMatchListFromExternal('main', { force: false })
-      // 再刷新全部赛事
-      console.log('后台刷新全部赛事数据...')
-      await updateMatchListFromExternal('all', { force: false })
-      console.log('✅ 后台自动刷新完成')
+      mainResult = await updateMatchListFromExternal('main', { force: true })
+      console.log('✅ 主要赛事刷新成功，数量:', mainResult.data?.length || 0)
+    } catch (error) {
+      console.error('❌ 主要赛事刷新失败:', error.message)
+      hasError = true
+      errorMsg += `[main:${error.message}] `
+    }
+    
+    // 再刷新全部赛事
+    console.log('后台刷新全部赛事数据...')
+    try {
+      allResult = await updateMatchListFromExternal('all', { force: true })
+      console.log('✅ 全部赛事刷新成功，数量:', allResult.data?.length || 0)
+    } catch (error) {
+      console.error('❌ 全部赛事刷新失败:', error.message)
+      hasError = true
+      errorMsg += `[all:${error.message}] `
+    }
+    
+    // 只要有一个成功就算成功
+    if (mainResult || allResult) {
+      console.log('✅ 后台自动刷新完成（部分或全部成功）')
       return {
         success: true,
-        message: '后台自动刷新成功',
+        message: hasError ? '后台自动刷新部分成功' : '后台自动刷新成功',
         timestamp: new Date().toISOString(),
-        season: currentSeason
+        season: currentSeason,
+        mainCount: mainResult?.data?.length || 0,
+        allCount: allResult?.data?.length || 0,
+        partialError: hasError ? errorMsg : null
       }
-    } catch (error) {
-      console.error('❌ 后台自动刷新失败:', error.message)
-      return {
-        success: false,
-        message: '后台自动刷新失败',
-        error: error.message,
-        timestamp: new Date().toISOString()
-      }
+    }
+    
+    // 全部失败
+    console.error('❌ 后台自动刷新全部失败:', errorMsg)
+    return {
+      success: false,
+      message: '后台自动刷新失败',
+      error: errorMsg,
+      timestamp: new Date().toISOString()
     }
   }
 
