@@ -2977,15 +2977,28 @@ async function generateDiagnosticReport(options = {}) {
  */
 exports.main = async (event, context) => {
   const startTime = Date.now()
+  const wxContext = cloud.getWXContext()
+  
   console.log(`[${new Date().toISOString()}] 云函数收到请求:`, JSON.stringify(event))
   console.log('云函数上下文:', JSON.stringify(context))
+  console.log('WXContext:', JSON.stringify(wxContext))
 
   const { action, id, matchId, date, tour = 'all', force = false } = event
 
   // 检测是否为定时触发器调用（后台自动刷新）
-  // 微信云函数定时触发器会在 event 中包含 Type: 'timer' 和 __trigger__: 'timer'
-  const isTimerTrigger = event.Type === 'timer' || event.__trigger__ === 'timer' || context.TRIGGER_SOURCE === 'timer'
-  console.log('定时触发器检测:', { isTimerTrigger, eventType: event.Type, trigger: event.__trigger__, contextTrigger: context.TRIGGER_SOURCE })
+  // 方式1: 通过 event 中的字段判断
+  // 方式2: 通过 wxContext.SOURCE 判断（微信官方推荐）
+  const isTimerTrigger = event.Type === 'timer' || 
+                         event.__trigger__ === 'timer' || 
+                         context.TRIGGER_SOURCE === 'timer' ||
+                         wxContext.SOURCE === 'wx_trigger'
+  console.log('定时触发器检测:', { 
+    isTimerTrigger, 
+    eventType: event.Type, 
+    trigger: event.__trigger__, 
+    contextTrigger: context.TRIGGER_SOURCE,
+    wxSource: wxContext.SOURCE 
+  })
   if (isTimerTrigger) {
     console.log('🕐 定时触发器调用，执行后台自动刷新...')
     try {

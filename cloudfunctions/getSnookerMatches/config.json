@@ -7,7 +7,7 @@
     {
       "name": "autoRefreshMatches",
       "type": "timer",
-      "config": "0 */1 * * * *"
+      "config": "0 */2 * * * * *"
     }
   ]
 }
