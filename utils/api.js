@@ -185,3 +185,35 @@ export function getMatchListFromExternal() {
     })
   })
 }
+
+/**
+ * 一键刷新全部数据（all + main）
+ * 强制从 snooker.org 获取最新数据并更新数据库
+ */
+export function refreshAll() {
+  return new Promise((resolve, reject) => {
+    console.log('开始一键刷新全部数据（all + main）')
+    
+    cloud.callFunction({
+      name: 'getSnookerMatches',
+      timeout: CLOUD_FN_TIMEOUT,
+      data: {
+        action: 'refreshAll'
+      }
+    }).then(res => {
+      console.log('一键刷新返回结果:', res)
+      if (res.result && res.result.success) {
+        resolve({
+          all: res.result.all,
+          main: res.result.main,
+          timestamp: res.result.timestamp
+        })
+      } else {
+        reject(new Error(res.result?.message || '一键刷新失败'))
+      }
+    }).catch(err => {
+      console.error('一键刷新失败:', err)
+      reject(err)
+    })
+  })
+}

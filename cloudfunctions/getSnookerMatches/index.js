@@ -25,32 +25,20 @@ async function getMatchListFromDB(season, tourType = 'all') {
     console.log(`[${new Date().toISOString()}] 从数据库获取比赛列表，赛季: ${season}, 类型: ${tourType}`)
     const db = cloud.database()
     
-    // 构建查询条件
+    // 构建查询条件 - 根据 season 和 tour_type 查询
     const query = db.collection(DB_COLLECTION).where({
-      season: season
+      season: season,
+      tour_type: tourType
     })
     
     const queryStartTime = Date.now()
     const result = await query.orderBy('start_date', 'asc').get()
     const queryTime = Date.now() - queryStartTime
-    console.log(`[${new Date().toISOString()}] 数据库查询成功，获取 ${result.data.length} 条记录，查询耗时: ${queryTime}ms`)
+    console.log(`[${new Date().toISOString()}] 数据库查询成功，获取 ${result.data.length} 条记录，类型: ${tourType}，查询耗时: ${queryTime}ms`)
     
-    // 如果在内存中过滤主要赛事
-    if (tourType === 'main' && result.data.length > 0) {
-      const filterStartTime = Date.now()
-      const mainMatches = result.data.filter(match => {
-        const id = String(match.id || '').toLowerCase()
-        // 过滤掉挑战赛和资格赛
-        return !id.includes('challenge') && !id.includes('qual')
-      })
-      const filterTime = Date.now() - filterStartTime
-      const totalTime = Date.now() - startTime
-      console.log(`[${new Date().toISOString()}] 过滤后主要赛事数量: ${mainMatches.length}，过滤耗时: ${filterTime}ms，总耗时: ${totalTime}ms`)
-      return mainMatches
-    }
-    
+    // 数据已经在保存时按类型区分好了，直接返回
     const totalTime = Date.now() - startTime
-    console.log(`[${new Date().toISOString()}] 数据库查询总耗时: ${totalTime}ms`)
+    console.log(`[${new Date().toISOString()}] 数据库查询总耗时: ${totalTime}ms，返回 ${result.data.length} 条记录`)
     return result.data
   } catch (error) {
     console.error('从数据库获取比赛列表失败:', error)
@@ -62,8 +50,9 @@ async function getMatchListFromDB(season, tourType = 'all') {
  * 保存比赛列表到云数据库（优化版：先对比，无变化零写入）
  * @param {Array} matches - 比赛列表数据
  * @param {number} season - 赛季年份
+ * @param {string} tourType - 赛事类型：'all' 或 'main'
  */
-async function saveMatchListToDB(matches, season) {
+async function saveMatchListToDB(matches, season, tourType = 'all') {
   const startTime = Date.now()
   try {
     if (!matches || !Array.isArray(matches) || matches.length === 0) {
@@ -71,20 +60,21 @@ async function saveMatchListToDB(matches, season) {
       return false
     }
     
-    console.log(`[${new Date().toISOString()}] 开始检查 ${matches.length} 条数据是否需要更新，赛季: ${season}`)
+    console.log(`[${new Date().toISOString()}] 开始检查 ${matches.length} 条数据是否需要更新，赛季: ${season}, 类型: ${tourType}`)
     const db = cloud.database()
     const now = new Date().toISOString()
     
     // ========== 步骤1：获取数据库现有数据 ==========
+    // 同时根据 season 和 tour_type 查询，all 和 main 分开存储
     const dbResult = await db.collection(DB_COLLECTION)
-      .where({ season: season })
+      .where({ season: season, tour_type: tourType })
       .get()
     const dbData = dbResult.data || []
     
     // ========== 步骤2：快速对比——数量不同说明有变化 ==========
     if (dbData.length !== matches.length) {
       console.log(`数据数量变化: ${dbData.length} -> ${matches.length}，需要全量更新`)
-      return await performFullUpdate(matches, season, now)
+      return await performFullUpdate(matches, season, now, tourType)
     }
     
     // ========== 步骤3：数量相同，对比内容哈希 ==========
@@ -156,7 +146,7 @@ async function saveMatchListToDB(matches, season) {
     // 5.2 新增数据
     for (const item of toAdd) {
       await db.collection(DB_COLLECTION).add({
-        data: { ...item, season, updated_at: now }
+        data: { ...item, season, tour_type: tourType, updated_at: now }
       })
       writeCount++
     }
@@ -165,7 +155,7 @@ async function saveMatchListToDB(matches, season) {
     // 5.3 更新数据
     for (const item of toUpdate) {
       await db.collection(DB_COLLECTION).doc(item._id).update({
-        data: { ...item, season, updated_at: now }
+        data: { ...item, season, tour_type: tourType, updated_at: now }
       })
       writeCount++
     }
@@ -199,16 +189,20 @@ function generateMatchHash(match) {
 
 /**
  * 全量更新（数据量变化大时使用）
+ * @param {Array} matches - 比赛列表数据
+ * @param {number} season - 赛季年份
+ * @param {string} now - ISO格式的时间字符串
+ * @param {string} tourType - 赛事类型：'all' 或 'main'
  */
-async function performFullUpdate(matches, season, now) {
+async function performFullUpdate(matches, season, now, tourType = 'all') {
   const startTime = Date.now()
   const db = cloud.database()
   
-  // 删除当前赛季所有数据
+  // 删除当前赛季指定类型的所有数据
   await db.collection(DB_COLLECTION)
-    .where({ season })
+    .where({ season, tour_type: tourType })
     .remove()
-  console.log(`已删除旧数据，准备写入 ${matches.length} 条新数据`)
+  console.log(`已删除旧数据，准备写入 ${matches.length} 条新数据，类型: ${tourType}`)
   
   // 分批写入新数据
   const batchSize = 20
@@ -217,9 +211,10 @@ async function performFullUpdate(matches, season, now) {
   for (let i = 0; i < matches.length; i += batchSize) {
     const batch = matches.slice(i, i + batchSize)
     const operations = batch.map(match => ({
-      _id: String(match.id),
+      _id: `${tourType}_${match.id}`,  // 使用组合ID避免all和main冲突
       ...match,
       season,
+      tour_type: tourType,
       updated_at: now
     }))
     
@@ -251,9 +246,10 @@ async function performFullUpdate(matches, season, now) {
 /**
  * 获取数据库数据的最后更新时间
  * @param {number} season - 赛季年份
+ * @param {string} tourType - 赛事类型：'all' 或 'main'
  * @returns {string|null} ISO格式的最后更新时间，如果没有数据则返回null
  */
-async function getLastUpdateTimeFromDB(season) {
+async function getLastUpdateTimeFromDB(season, tourType = 'all') {
   const startTime = Date.now()
   try {
     const db = cloud.database()
@@ -261,7 +257,7 @@ async function getLastUpdateTimeFromDB(season) {
     // 检查最新更新时间
     const queryStartTime = Date.now()
     const latestResult = await db.collection(DB_COLLECTION)
-      .where({ season: season })
+      .where({ season: season, tour_type: tourType })
       .orderBy('updated_at', 'desc')
       .limit(1)
       .get()
@@ -316,9 +312,10 @@ async function getLastUpdateTimeFromDB(season) {
 /**
  * 检查数据库数据是否需要更新
  * @param {number} season - 赛季年份
+ * @param {string} tourType - 赛事类型：'all' 或 'main'
  * @returns {boolean} true表示需要更新，false表示不需要
  */
-async function shouldUpdateFromDB(season) {
+async function shouldUpdateFromDB(season, tourType = 'all') {
   const startTime = Date.now()
   try {
     const db = cloud.database()
@@ -327,7 +324,7 @@ async function shouldUpdateFromDB(season) {
     // 检查该赛季是否有数据
     const countStartTime = Date.now()
     const result = await db.collection(DB_COLLECTION)
-      .where({ season: season })
+      .where({ season: season, tour_type: tourType })
       .count()
     const countTime = Date.now() - countStartTime
     
@@ -339,7 +336,7 @@ async function shouldUpdateFromDB(season) {
     // 检查最新更新时间
     const latestStartTime = Date.now()
     const latestResult = await db.collection(DB_COLLECTION)
-      .where({ season: season })
+      .where({ season: season, tour_type: tourType })
       .orderBy('updated_at', 'desc')
       .limit(1)
       .get()
@@ -423,13 +420,14 @@ async function updateMatchListFromExternal(tourType = 'all', options = {}) {
       console.log('数据样本:', externalData[0])
       const formatted = formatMatchList(externalData)
 
-      // 改为后台异步保存数据库，不阻塞返回结果
-      saveMatchListToDB(formatted, currentSeason).then(() => {
-        console.log(`数据库后台更新完成，保存 ${formatted.length} 条记录`)
-      }).catch(err => {
-        console.error('数据库后台更新失败:', err.message)
-      })
-      console.log(`数据库后台更新已启动，${formatted.length} 条记录`)
+      // 同步保存数据库，确保数据写入完成
+      try {
+        await saveMatchListToDB(formatted, currentSeason, tourType)
+        console.log(`数据库同步更新完成，保存 ${formatted.length} 条记录，类型: ${tourType}`)
+      } catch (err) {
+        console.error('数据库同步更新失败:', err.message)
+        // 保存失败不影响返回结果，继续执行
+      }
 
       const apiUpdateTime = new Date().toISOString()
 
@@ -730,12 +728,12 @@ async function getMatchList(tourType = 'all') {
       console.log(`从数据库获取到 ${dbMatches.length} 条比赛记录`)
       
       // 检查数据库数据是否需要更新
-      const needUpdate = await shouldUpdateFromDB(currentSeason)
+      const needUpdate = await shouldUpdateFromDB(currentSeason, tourType)
       
       if (!needUpdate) {
         console.log('✅ 数据库数据新鲜（72小时内），直接返回缓存数据')
         // 获取数据库中的实际最后更新时间
-        const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+        const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason, tourType)
         // 确保lastUpdate是有效的ISO字符串
         let lastUpdateStr
         if (dbLastUpdate) {
@@ -832,7 +830,7 @@ async function getMatchList(tourType = 'all') {
       console.log('数据库数据状态:', dbMatches ? '有数据，数量:' + dbMatches.length : '无数据')
 
       const errorType = getErrorType(updateError)
-      const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+      const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason, tourType)
       if (dbMatches && dbMatches.length > 0) {
         return {
           data: dbMatches,
@@ -869,8 +867,8 @@ async function getMatchList(tourType = 'all') {
     
     // 将降级数据保存到数据库以备下次使用
     try {
-      await saveMatchListToDB(fallbackData, currentSeason)
-      console.log(`降级数据已保存到数据库，保存 ${fallbackData.length} 条记录`)
+      await saveMatchListToDB(fallbackData, currentSeason, tourType)
+      console.log(`降级数据已保存到数据库，保存 ${fallbackData.length} 条记录，类型: ${tourType}`)
     } catch (saveError) {
       console.error('保存降级数据到数据库失败:', saveError.message)
     }
@@ -927,7 +925,7 @@ async function getMatchList(tourType = 'all') {
 
 async function getDatabaseFallbackPayload(currentSeason, tour, error, forceUpdate = false) {
   const dbMatches = await getMatchListFromDB(currentSeason, tour)
-  const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+  const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason, tour)
   const errorType = getErrorType(error)
 
   if (dbMatches && dbMatches.length > 0) {
@@ -1013,16 +1011,17 @@ async function fetchFromSnookerApi(season, tourType = 'all') {
     // 根据tourType过滤数据
     let filteredData = response
     if (tourType === 'main') {
-      // 过滤掉Q Tour和其他非主要赛事
+      // 过滤掉资格赛、分组赛、挑战赛、Q Tour等
       filteredData = response.filter(item => {
-        const tour = item.Tour || item.tour || ''
         const name = item.Name || item.name || ''
-        const related = item.Related || item.related || ''
+        const nameLower = name.toLowerCase()
         
-        // 主要赛事: tour为'main'或为空，且不包含'Q Tour'等关键词
-        return (tour === 'main' || tour === '' || tour === null) &&
-               !name.includes('Q Tour') &&
-               !related.includes('qtour')
+        // 排除资格赛、分组赛、挑战赛、Q Tour
+        return !nameLower.includes('qualifiers') &&   // 资格赛
+               !nameLower.includes('qualifying') &&
+               !nameLower.includes('challenge') &&    // 挑战赛
+               !nameLower.includes('q tour') &&       // Q Tour
+               !nameLower.includes('group')           // 分组赛
       })
       console.log(`过滤后主要赛事数量: ${filteredData.length}（原始: ${response.length}）`)
     }
@@ -1369,32 +1368,42 @@ async function getSnookerEvents(season, tour = 'main', skipCache = false, reques
     console.log(`================================`)
   }
 
-  console.log(`snooker.org 缓存未命中，开始请求 API，赛季: ${season}, 类型: ${tour}`)
-  const data = await fetchFromSnookerOrg('tournaments', { season, tour }, requestConfig)
+  // 注意：不传递 tour 参数给 API，获取全部赛事后在内存中过滤
+  // snooker.org 的 tour 参数行为不符合预期（包含资格赛、分组赛等）
+  console.log(`snooker.org 缓存未命中，开始请求 API，赛季: ${season} (获取全部赛事后在内存过滤)`)
+  const data = await fetchFromSnookerOrg('tournaments', { season }, requestConfig)
 
   
   // 根据tour参数过滤数据
   let filteredData = data
   if (tour === 'main') {
-    // 主要赛事：过滤掉资格赛、挑战赛等
-    // 根据实际API返回的Tour字段值进行过滤
-    // 从test_result.json看到，主要赛事有 Tour: "main"
-    // 资格赛有 Tour: "q"
-    // 挑战赛可能有其他值
+    // 主要赛事：过滤掉资格赛、分组赛、挑战赛、Q Tour等
     filteredData = data.filter(item => {
-      // 保留主要赛事（Tour字段为'main'）
-      const tourValue = item.Tour || ''
-      return tourValue.toLowerCase() === 'main'
+      const name = item.Name || item.name || ''
+      const nameLower = name.toLowerCase()
+      
+      // 排除资格赛、分组赛、挑战赛、Q Tour
+      return !nameLower.includes('qualifiers') &&   // 资格赛
+             !nameLower.includes('qualifying') &&
+             !nameLower.includes('challenge') &&    // 挑战赛
+             !nameLower.includes('q tour') &&       // Q Tour
+             !nameLower.includes('group')           // 分组赛
     })
     console.log(`过滤后主要赛事数量: ${filteredData.length} (原始数量: ${data.length})`)
     
     // 如果没有过滤到数据，返回所有数据（避免空列表）
     if (filteredData.length === 0 && data.length > 0) {
-      console.log('警告: 没有找到Tour字段为"main"的赛事，返回所有数据')
+      console.log('警告: 没有找到主要赛事，返回所有数据')
       filteredData = data
     }
   } else {
-    console.log(`使用全部赛事数据，数量: ${data.length}`)
+    // 全部赛事：只排除 Q Tour，保留资格赛、分组赛等
+    filteredData = data.filter(item => {
+      const name = item.Name || item.name || ''
+      const nameLower = name.toLowerCase()
+      return !nameLower.includes('q tour')  // 只排除 Q Tour
+    })
+    console.log(`过滤后全部赛事数量: ${filteredData.length} (原始数量: ${data.length}, 已排除Q Tour)`)
   }
   
   // 赛事列表变化不频繁，缓存 30 分钟
@@ -3153,6 +3162,25 @@ exports.main = async (event, context) => {
     let result
 
     switch (action) {
+      case 'clear':
+        console.log('执行: 清空数据库')
+        const db = cloud.database()
+        const collection = db.collection(DB_COLLECTION)
+        // 获取所有记录
+        const allRecords = await collection.limit(1000).get()
+        console.log(`找到 ${allRecords.data.length} 条记录，开始删除...`)
+        // 批量删除
+        const deleteTasks = allRecords.data.map(item => collection.doc(item._id).remove())
+        await Promise.all(deleteTasks)
+        console.log(`✅ 已清空 ${allRecords.data.length} 条记录`)
+        result = {
+          success: true,
+          message: `已清空 ${allRecords.data.length} 条记录`,
+          deletedCount: allRecords.data.length,
+          timestamp: new Date().toISOString()
+        }
+        break
+
       case 'test':
         console.log('执行: 诊断测试')
         const testType = event.testType || 'full'
@@ -3169,6 +3197,29 @@ exports.main = async (event, context) => {
         } else {
           // 完整诊断（默认使用快速模式，避免超时）
           result = await generateDiagnosticReport({ fastMode: true })
+        }
+        break
+
+      case 'refreshAll':
+        console.log('执行: 一键刷新全部数据（all + main）')
+        const refreshResults = { all: null, main: null }
+        try {
+          refreshResults.all = await updateMatchListFromExternal('all', { force: true })
+          console.log('✅ 全部赛事刷新成功:', refreshResults.all.data?.length || 0)
+        } catch (err) {
+          console.error('❌ 全部赛事刷新失败:', err.message)
+        }
+        try {
+          refreshResults.main = await updateMatchListFromExternal('main', { force: true })
+          console.log('✅ 主要赛事刷新成功:', refreshResults.main.data?.length || 0)
+        } catch (err) {
+          console.error('❌ 主要赛事刷新失败:', err.message)
+        }
+        result = {
+          success: true,
+          all: { count: refreshResults.all?.data?.length || 0 },
+          main: { count: refreshResults.main?.data?.length || 0 },
+          timestamp: new Date().toISOString()
         }
         break
 
@@ -3298,7 +3349,7 @@ exports.main = async (event, context) => {
             }
           }
         } else {
-          const needUpdate = await shouldUpdateFromDB(currentSeason)
+          const needUpdate = await shouldUpdateFromDB(currentSeason, tour)
           if (needUpdate) {
             console.log('数据库需要更新，尝试从外部API同步')
             try {
@@ -3355,7 +3406,7 @@ exports.main = async (event, context) => {
             }
           } else {
             console.log('✅ 数据库数据新鲜，无需更新')
-            const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason)
+            const dbLastUpdate = await getLastUpdateTimeFromDB(currentSeason, tour)
             result = {
               message: '数据库数据新鲜，无需更新',
               updated: false,

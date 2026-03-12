@@ -1,4 +1,4 @@
-import { getMatchList } from '../../utils/api.js'
+import { getMatchList, refreshAll } from '../../utils/api.js'
 
 Page({
   data: {
@@ -72,8 +72,9 @@ Page({
   },
 
   // 加载比赛列表
-  loadMatchList(forceUpdate = false) {
-    const tour = this.data.activeTab
+  loadMatchList(forceUpdate = false, tour = null) {
+    // 如果没有传递 tour，从 data.activeTab 获取
+    tour = tour || this.data.activeTab
     const cache = this.getCacheSnapshot(tour)
 
     this.setData({
@@ -231,18 +232,38 @@ Page({
     this.loadMatchList()
   },
   
-  // 强制刷新数据（长按触发）
+  // 强制刷新数据（长按触发）- 一键刷新 all + main
   forceRefresh() {
     wx.showModal({
       title: '强制刷新',
-      content: '将直接从 snooker.org 获取最新数据；若超时会回退到最近有效数据。确定继续吗？',
+      content: '将直接从 snooker.org 获取最新数据（同时刷新全部赛事和主要赛事）。确定继续吗？',
       success: ({ confirm }) => {
         if (!confirm) {
           return
         }
 
         wx.showLoading({ title: '强制刷新中...' })
-        this.loadMatchList(true)
+        
+        // 调用一键刷新（同时刷新 all 和 main）
+        refreshAll()
+          .then(result => {
+            console.log('一键刷新成功:', result)
+            wx.showToast({
+              title: `刷新成功: ${result.all.count}+${result.main.count}`,
+              icon: 'none'
+            })
+            // 刷新当前页面数据
+            this.loadMatchList()
+          })
+          .catch(err => {
+            console.error('一键刷新失败:', err)
+            wx.showToast({
+              title: '刷新失败，使用缓存',
+              icon: 'none'
+            })
+            // 失败后回退到普通刷新
+            this.loadMatchList()
+          })
       }
     })
   },
@@ -270,7 +291,8 @@ Page({
       matchList: [],
       loading: true
     })
-    this.loadMatchList()
+    // 直接传递 tab 参数，避免 setData 异步问题
+    this.loadMatchList(false, tab)
   },
 
   // 格式化比赛列表数据
