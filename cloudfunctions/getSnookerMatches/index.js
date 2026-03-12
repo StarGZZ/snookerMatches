@@ -59,7 +59,7 @@ async function getMatchListFromDB(season, tourType = 'all') {
 }
 
 /**
- * 保存比赛列表到云数据库
+ * 保存比赛列表到云数据库（优化版：先对比，无变化零写入）
  * @param {Array} matches - 比赛列表数据
  * @param {number} season - 赛季年份
  */
@@ -71,92 +71,181 @@ async function saveMatchListToDB(matches, season) {
       return false
     }
     
-    console.log(`[${new Date().toISOString()}] 开始保存 ${matches.length} 条记录到数据库，赛季: ${season}`)
+    console.log(`[${new Date().toISOString()}] 开始检查 ${matches.length} 条数据是否需要更新，赛季: ${season}`)
     const db = cloud.database()
-    const now = new Date().toISOString()  // 使用 ISO 字符串格式，便于读取
+    const now = new Date().toISOString()
     
-    // 核心改进：并行清理所有旧数据（非当前赛季和当前赛季）
-    const currentSeason = getCurrentSeason()
+    // ========== 步骤1：获取数据库现有数据 ==========
+    const dbResult = await db.collection(DB_COLLECTION)
+      .where({ season: season })
+      .get()
+    const dbData = dbResult.data || []
     
-    try {
-      const cleanStartTime = Date.now()
-      console.log(`[${new Date().toISOString()}] 开始并行清理旧数据...`)
-      
-      // 并行执行两个删除操作
-      const [oldSeasonsResult, currentSeasonResult] = await Promise.all([
-        // 删除非当前赛季数据
-        db.collection(DB_COLLECTION)
-          .where({ season: db.command.neq(currentSeason) })
-          .remove()
-          .catch(err => {
-            console.warn('清理非当前赛季数据失败:', err.message)
-            return { stats: { removed: 0 } }
-          }),
-        
-        // 删除当前赛季旧数据
-        db.collection(DB_COLLECTION)
-          .where({ season: currentSeason })
-          .remove()
-          .catch(err => {
-            console.warn('清理当前赛季旧数据失败:', err.message)
-            return { stats: { removed: 0 } }
-          })
-      ])
-      
-      const cleanTime = Date.now() - cleanStartTime
-      const totalRemoved = (oldSeasonsResult.stats?.removed || 0) + (currentSeasonResult.stats?.removed || 0)
-      console.log(`[${new Date().toISOString()}] 并行清理旧数据完成，总计删除 ${totalRemoved} 条记录，耗时: ${cleanTime}ms`)
-      console.log(`  非当前赛季删除: ${oldSeasonsResult.stats?.removed || 0} 条`)
-      console.log(`  当前赛季删除: ${currentSeasonResult.stats?.removed || 0} 条`)
-      
-    } catch (cleanError) {
-      console.warn('并行清理旧数据失败，继续保存新数据:', cleanError.message)
+    // ========== 步骤2：快速对比——数量不同说明有变化 ==========
+    if (dbData.length !== matches.length) {
+      console.log(`数据数量变化: ${dbData.length} -> ${matches.length}，需要全量更新`)
+      return await performFullUpdate(matches, season, now)
     }
     
-    // 分批保存数据（避免单次操作过大）
-    const batchSize = 20
-    let savedCount = 0
+    // ========== 步骤3：数量相同，对比内容哈希 ==========
+    // 构建数据库中的ID集合和哈希映射
+    const dbMap = new Map()
+    for (const item of dbData) {
+      const hash = generateMatchHash(item)
+      dbMap.set(item._id, hash)
+    }
     
-    for (let i = 0; i < matches.length; i += batchSize) {
-      const batch = matches.slice(i, i + batchSize)
-      const operations = batch.map(match => ({
-        _id: match.id,
-        ...match,
-        season: season,
-        updated_at: now
-      }))
+    // 对比API数据
+    const toAdd = []      // 新增的
+    const toUpdate = []   // 有变化的
+    const apiIds = new Set()
+    let mismatchCount = 0
+    
+    for (const match of matches) {
+      const id = String(match.id)
+      apiIds.add(id)
+      const apiHash = generateMatchHash(match)
       
-      // 批量添加
-      const addPromises = operations.map(operation => 
-        db.collection(DB_COLLECTION).add({ data: operation })
-      )
-      
-      try {
-        await Promise.all(addPromises)
-        savedCount += batch.length
-        console.log(`批量保存成功: ${batch.length} 条（总计: ${savedCount}/${matches.length}）`)
-      } catch (batchError) {
-        console.error(`批量保存失败（批次 ${i/batchSize + 1}）:`, batchError.message)
-        // 尝试单条保存
-        for (const operation of operations) {
-          try {
-            await db.collection(DB_COLLECTION).add({ data: operation })
-            savedCount++
-          } catch (singleError) {
-            console.error('单条保存失败:', singleError.message)
-          }
+      if (!dbMap.has(id)) {
+        // 数据库中不存在，新增
+        toAdd.push({ ...match, _id: id })
+      } else if (dbMap.get(id) !== apiHash) {
+        // 哈希不同，有变化，更新
+        toUpdate.push({ ...match, _id: id })
+        
+        // 调试：打印前3条不匹配的详情
+        if (mismatchCount < 3) {
+          const dbItem = dbData.find(d => d._id === id)
+          console.log(`[调试] ID=${id} 哈希不匹配:`)
+          console.log(`  API:  ${apiHash}`)
+          console.log(`  DB:   ${dbMap.get(id)}`)
+          console.log(`  API字段: name="${match.name}", start="${match.start_date}", end="${match.end_date}", venue="${match.venue}", prize="${match.prize_fund}"`)
+          console.log(`  DB字段:  name="${dbItem?.name}", start="${dbItem?.start_date}", end="${dbItem?.end_date}", venue="${dbItem?.venue}", prize="${dbItem?.prize_fund}"`)
+          mismatchCount++
         }
       }
     }
     
-    const endTime = Date.now()
-    const totalTime = endTime - startTime
-    console.log(`[${new Date().toISOString()}] 数据保存完成，总计保存 ${savedCount} 条记录，总耗时: ${totalTime}ms (${(totalTime/1000).toFixed(2)}秒)`)
-    return savedCount > 0
+    // 数据库中有但API没有的（需要删除）
+    const toDelete = dbData.filter(item => !apiIds.has(item._id)).map(item => item._id)
+    
+    // ========== 步骤4：无变化则直接返回 ==========
+    if (toAdd.length === 0 && toUpdate.length === 0 && toDelete.length === 0) {
+      console.log(`[${new Date().toISOString()}] ✅ 数据无变化，跳过写入（零写入）`)
+      return true
+    }
+    
+    console.log(`[${new Date().toISOString()}] 需要更新: 新增${toAdd.length}, 修改${toUpdate.length}, 删除${toDelete.length}`)
+    
+    // ========== 步骤5：执行增量更新 ==========
+    let writeCount = 0
+    
+    // 5.1 删除数据
+    if (toDelete.length > 0) {
+      const deleteBatch = 50  // 云函数限制每次最多50条
+      for (let i = 0; i < toDelete.length; i += deleteBatch) {
+        const batch = toDelete.slice(i, i + deleteBatch)
+        await db.collection(DB_COLLECTION)
+          .where({ _id: db.command.in(batch) })
+          .remove()
+        writeCount += batch.length
+      }
+      console.log(`删除完成: ${toDelete.length} 条`)
+    }
+    
+    // 5.2 新增数据
+    for (const item of toAdd) {
+      await db.collection(DB_COLLECTION).add({
+        data: { ...item, season, updated_at: now }
+      })
+      writeCount++
+    }
+    console.log(`新增完成: ${toAdd.length} 条`)
+    
+    // 5.3 更新数据
+    for (const item of toUpdate) {
+      await db.collection(DB_COLLECTION).doc(item._id).update({
+        data: { ...item, season, updated_at: now }
+      })
+      writeCount++
+    }
+    console.log(`更新完成: ${toUpdate.length} 条`)
+    
+    const totalTime = Date.now() - startTime
+    console.log(`[${new Date().toISOString()}] 增量更新完成，写入次数: ${writeCount}，耗时: ${totalTime}ms`)
+    return true
+    
   } catch (error) {
     console.error('保存比赛列表到数据库失败:', error)
     return false
   }
+}
+
+/**
+ * 生成比赛数据的哈希（用于快速对比）
+ * 注意：不对比 status 字段，因为状态是动态计算的（随时间变化）
+ */
+function generateMatchHash(match) {
+  // 只对比静态核心字段，忽略 status（动态计算）和 updated_at 等元数据
+  const name = match.name || match.Name || ''
+  const start_date = match.start_date || match.StartDate || ''
+  const end_date = match.end_date || match.EndDate || ''
+  const venue = match.venue || match.Venue || ''
+  const prize_fund = match.prize_fund || match.PrizeFund || ''
+  
+  // 使用固定格式拼接，避免 JSON.stringify 的字段顺序问题
+  return `${name}|${start_date}|${end_date}|${venue}|${prize_fund}`
+}
+
+/**
+ * 全量更新（数据量变化大时使用）
+ */
+async function performFullUpdate(matches, season, now) {
+  const startTime = Date.now()
+  const db = cloud.database()
+  
+  // 删除当前赛季所有数据
+  await db.collection(DB_COLLECTION)
+    .where({ season })
+    .remove()
+  console.log(`已删除旧数据，准备写入 ${matches.length} 条新数据`)
+  
+  // 分批写入新数据
+  const batchSize = 20
+  let savedCount = 0
+  
+  for (let i = 0; i < matches.length; i += batchSize) {
+    const batch = matches.slice(i, i + batchSize)
+    const operations = batch.map(match => ({
+      _id: String(match.id),
+      ...match,
+      season,
+      updated_at: now
+    }))
+    
+    const addPromises = operations.map(operation => 
+      db.collection(DB_COLLECTION).add({ data: operation })
+    )
+    
+    try {
+      await Promise.all(addPromises)
+      savedCount += batch.length
+    } catch (error) {
+      // 单条重试
+      for (const operation of operations) {
+        try {
+          await db.collection(DB_COLLECTION).add({ data: operation })
+          savedCount++
+        } catch (e) {
+          console.error('单条保存失败:', e.message)
+        }
+      }
+    }
+  }
+  
+  const totalTime = Date.now() - startTime
+  console.log(`[${new Date().toISOString()}] 全量更新完成，写入 ${savedCount} 条，耗时: ${totalTime}ms`)
+  return savedCount > 0
 }
 
 /**
@@ -2982,7 +3071,14 @@ exports.main = async (event, context) => {
   console.log('云函数上下文:', JSON.stringify(context))
   console.log('WXContext:', JSON.stringify(wxContext))
 
-  const { action, id, matchId, date, tour = 'all', force = false } = event
+  let { action, id, matchId, date, tour = 'all', force = false, tourType } = event
+
+  // 兼容性处理：如果没有 action 但有 tourType，默认执行 list
+  if (!action && tourType) {
+    action = 'list'
+    tour = tourType  // 兼容 tourType 参数
+    console.log('未指定 action，根据 tourType 默认执行 list 操作')
+  }
 
   // 检测是否为定时触发器调用（后台自动刷新）
   // 方式1: 通过 event 中的字段判断
